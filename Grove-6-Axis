@@ -1,1 +1,32 @@
+#include <Wire.h>
+#include <LSM6DS3.h>
 
+// I2C, Grove-6-Axis 預設位址
+LSM6DS3 imu(I2C_MODE, 0x6A);
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+
+  // Seeed 版本 begin() 回傳的是 status_t
+  if (imu.begin() != IMU_SUCCESS) {
+    Serial.println("IMU init failed");
+    while (1);
+  }
+
+  Serial.println("time_ms,ax,ay,az");
+}
+
+void loop() {
+  unsigned long t = millis();
+
+  Serial.print(t);
+  Serial.print(",");
+  Serial.print(imu.readFloatAccelX(), 6);
+  Serial.print(",");
+  Serial.print(imu.readFloatAccelY(), 6);
+  Serial.print(",");
+  Serial.println(imu.readFloatAccelZ(), 6);
+
+  delay(10);
+}
