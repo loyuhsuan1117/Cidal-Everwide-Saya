@@ -1,45 +1,48 @@
-#include "Adafruit_BMP3XX.h"
+#include <Wire.h>
+#include <Adafruit_BMP3XX.h>
 
-Adafruit_BMP3XX bmp; // 只保留一個感測器物件
+#define SEALEVELPRESSURE_HPA (1013.25)
+
+Adafruit_BMP3XX bmp;
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial);
-  Serial.println("Adafruit BMP388 / BMP390 單感測器測試");
+  while (!Serial);   // Mega 可保留，不影響
 
-  // 初始化感測器，預設 I2C 地址通常是 0x77
-  if (! bmp.begin_I2C()) {   
-    Serial.println("找不到感測器，請檢查接線！");
+  Serial.println("BMP3XX test");
+
+  if (!bmp.begin_I2C()) {   // I2C 模式
+    Serial.println("Could not find BMP3XX sensor!");
     while (1);
   }
 
-  Serial.println("初始化成功！");
-
-  // 設定參數
+  // 設定感測器參數
   bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
   bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
   bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
   bmp.setOutputDataRate(BMP3_ODR_50_HZ);
 
-  Serial.println("----[開始讀取數據]----------------------------");
+  Serial.println("BMP3XX initialized");
 }
 
 void loop() {
-  // 執行讀取
-  if (! bmp.performReading()) {
-    Serial.println("讀取失敗 :(");
+  if (!bmp.performReading()) {
+    Serial.println("Failed to perform reading");
     return;
   }
 
-  // 輸出溫度
-  Serial.print("溫度 = ");
+  Serial.print("Temperature = ");
   Serial.print(bmp.temperature);
-  Serial.print(" *C");
+  Serial.println(" *C");
 
-  // 輸出壓力 (從 Pa 轉換為 hPa)
-  Serial.print("    壓力 = ");
+  Serial.print("Pressure = ");
   Serial.print(bmp.pressure / 100.0);
-  Serial.println(" hPa");  
+  Serial.println(" hPa");
 
-  delay(2000); // 每兩秒讀取一次
+  Serial.print("Altitude = ");
+  Serial.print(bmp.readAltitude(SEALEVELPRESSURE_HPA));
+  Serial.println(" m");
+
+  Serial.println();
+  delay(1000);
 }
