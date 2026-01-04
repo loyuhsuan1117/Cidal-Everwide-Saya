@@ -1,1 +1,66 @@
+/*
+ * Arduino Mega + NEO-M9N GNSS 讀取範例
+ * 使用硬體通訊埠 Serial1 (Pin 19:RX, Pin 18:TX)
+ */
 
+#include <Wire.h>
+#include <SparkFun_u-blox_GNSS_Arduino_Library.h> // 請先在 Library Manager 安裝此函式庫
+
+SFE_UBLOX_GNSS myGNSS;
+
+void setup() {
+  Serial.begin(115200); // 電腦序列埠監控視窗
+  while (!Serial); 
+  Serial.println("--- NEO-M9N 測試開始 ---");
+
+  // 1. 初始化 Mega 的 Serial1，NEO-M9N 預設波特率通常為 38400
+  Serial1.begin(38400);
+
+  // 2. 初始化 GNSS 模組
+  // .begin(Serial1) 會自動嘗試偵測模組
+  if (myGNSS.begin(Serial1) == false) {
+    Serial.println("錯誤：找不到 u-blox 模組。請檢查接線(TX1/RX1)與波特率。");
+    while (1);
+  }
+
+  Serial.println("成功連線至 NEO-M9N");
+
+  // 3. 設定優化（選用）
+  myGNSS.setUART1Output(COM_TYPE_UBX); // 只輸出 UBX 格式，減少解析負擔
+  myGNSS.setNavigationFrequency(5);    // 設定更新頻率為 5Hz (每秒 5 次)
+  myGNSS.saveConfigSelective(VAL_CFG_SUBSEC_IOPORT); // 儲存設定到模組閃存
+}
+
+void loop() {
+  // 檢查是否有新的導航數據
+  // getPVT (Position, Velocity, Time) 是獲取資訊最完整的方法
+  if (myGNSS.getPVT()) {
+    
+    float latitude = myGNSS.getLatitude() / 10000000.0;  // 緯度
+    float longitude = myGNSS.getLongitude() / 10000000.0; // 經度
+    long altitude = myGNSS.getAltitude();                // 高度 (mm)
+    byte SIV = myGNSS.getSIV();                          // 衛星數量
+    int fixType = myGNSS.getFixType();                   // 定位類型
+
+    // 輸出到電腦螢幕
+    Serial.print("狀態: ");
+    if(fixType == 0) Serial.print("未定位");
+    else if(fixType == 3) Serial.print("3D 定位");
+    else Serial.print("定位中...");
+
+    Serial.print(" | 衛星數: ");
+    Serial.print(SIV);
+
+    Serial.print(" | 緯度: ");
+    Serial.print(latitude, 6); // 顯示 6 位小數
+
+    Serial.print(" | 經度: ");
+    Serial.print(longitude, 6);
+
+    Serial.print(" | 高度: ");
+    Serial.print(altitude / 1000.0); // 轉換成公尺
+    Serial.println(" m");
+  }
+  
+  // 保持 loop 快速運行，不要使用 delay()
+}
