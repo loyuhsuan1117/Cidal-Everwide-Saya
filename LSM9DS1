@@ -1,77 +1,40 @@
 #include <Wire.h>
 #include <SparkFunLSM9DS1.h>
-#include <math.h> // 用於三角函數計算
 
 LSM9DS1 imu;
 
-// 磁偏角補正 (以台北為例約為 -4.8 度，建議根據所在位置修改)
-// 查詢網址：http://www.ngdc.noaa.gov/geomag-web/#declination
-#define DECLINATION -4.8 
-
 void setup() {
   Serial.begin(115200);
-  while (!Serial);
+  Wire.begin(21, 22);
 
-  Wire.begin();
-  // 提升 I2C 速度至 400kHz，對於 1km 火箭數據紀錄較理想
-  Wire.setClock(400000); 
-
-  // 初始化 IMU (使用 I2C 位址)
-  if (!imu.begin(0x6A, 0x1C, Wire)) {
-    Serial.println("LSM9DS1 初始化失敗！");
+  if (!imu.begin()) {
+    Serial.println("LSM9DS1 初始化失敗");
     while (1);
   }
-
-  Serial.println("LSM9DS1 姿態監測準備就緒...");
+  Serial.println("LSM9DS1 初始化成功");
 }
 
 void loop() {
-  // 讀取原始數據
   imu.readAccel();
   imu.readGyro();
   imu.readMag();
 
-  // 1. 取得物理單位數據
   float ax = imu.calcAccel(imu.ax);
   float ay = imu.calcAccel(imu.ay);
   float az = imu.calcAccel(imu.az);
+
+  float gx = imu.calcGyro(imu.gx);
+  float gy = imu.calcGyro(imu.gy);
+  float gz = imu.calcGyro(imu.gz);
+
   float mx = imu.calcMag(imu.mx);
   float my = imu.calcMag(imu.my);
   float mz = imu.calcMag(imu.mz);
 
-  // 2. 計算姿態角 (Pitch & Roll) - 基於加速度計
-  // 這裡計算的是相對於重力向量的角度
-  float roll = atan2(ay, az);
-  float pitch = atan2(-ax, sqrt(ay * ay + az * az));
+  Serial.print("ACC g: "); Serial.print(ax); Serial.print(", "); Serial.print(ay); Serial.print(", "); Serial.println(az);
+  Serial.print("GYRO dps: "); Serial.print(gx); Serial.print(", "); Serial.print(gy); Serial.print(", "); Serial.println(gz);
+  Serial.print("MAG gauss: "); Serial.print(mx); Serial.print(", "); Serial.print(my); Serial.print(", "); Serial.println(mz);
+  Serial.println("-----------------");
 
-  // 3. 計算航向角 (Heading) - 基於磁力計
-  float heading;
-  if (my == 0)
-    heading = (mx < 0) ? PI : 0;
-  else
-    heading = atan2(mx, my);
-
-  heading -= DECLINATION * PI / 180.0;
-
-  if (heading > PI) heading -= (2 * PI);
-  else if (heading < -PI) heading += (2 * PI);
-
-  // 4. 轉換為弧度為度數
-  pitch *= 180.0 / PI;
-  roll  *= 180.0 / PI;
-  heading *= 180.0 / PI;
-
-  // 5. 輸出結果至序列監視器
-  Serial.print("姿態 [P, R]: ");
-  Serial.print(pitch, 2); Serial.print(", ");
-  Serial.print(roll, 2);
-  Serial.print(" | 航向 [H]: ");
-  Serial.print(heading, 2);
-  
-  // 同時顯示加速度 (確認火箭上升力)
-  Serial.print(" | Accel Z: ");
-  Serial.print(az, 2); Serial.println(" g");
-
-  // 移除 delay(200)，讓紀錄頻率最大化，或使用小型延遲以利觀察
-  delay(100); 
+  delay(100);
 }
