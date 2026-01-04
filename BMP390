@@ -1,1 +1,41 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP3XX.h>
+
+// 建立 BMP390 物件
+Adafruit_BMP3XX bmp;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(21, 22); // ESP32-S3 SDA=21, SCL=22
+
+  if (!bmp.begin_I2C()) {
+    Serial.println("BMP390 初始化失敗");
+    while (1);
+  }
+  
+  // 設定 BMP390 精度
+  bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
+  bmp.setPressureOversampling(BMP3_OVERSAMPLING_8X);
+  bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
+  
+  Serial.println("BMP390 初始化成功");
+}
+
+void loop() {
+  if (!bmp.performReading()) {
+    Serial.println("BMP390 讀取失敗");
+    delay(100);
+    return;
+  }
+
+  float temperature = bmp.temperature; // °C
+  float pressure = bmp.pressure / 100.0; // hPa
+
+  Serial.print("Temperature °C: "); Serial.println(temperature);
+  Serial.print("Pressure hPa: "); Serial.println(pressure);
+  Serial.println("-----------------");
+
+  delay(500); // 0.5 秒更新
+}
 
