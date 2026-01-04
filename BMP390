@@ -1,40 +1,48 @@
 #include <Wire.h>
-#include <Adafruit_Sensor.h>
 #include <Adafruit_BMP3XX.h>
 
-// 建立 BMP390 物件
+#define SEALEVELPRESSURE_HPA (1013.25)
+
 Adafruit_BMP3XX bmp;
 
 void setup() {
   Serial.begin(115200);
-  Wire.begin(21, 22); // ESP32-S3 SDA=21, SCL=22
+  while (!Serial);   // Mega 可保留，不影響
 
-  if (!bmp.begin_I2C()) {
-    Serial.println("BMP390 初始化失敗");
+  Serial.println("BMP3XX test");
+
+  if (!bmp.begin_I2C()) {   // I2C 模式
+    Serial.println("Could not find BMP3XX sensor!");
     while (1);
   }
-  
-  // 設定 BMP390 精度
+
+  // 設定感測器參數
   bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
-  bmp.setPressureOversampling(BMP3_OVERSAMPLING_8X);
+  bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
   bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
-  
-  Serial.println("BMP390 初始化成功");
+  bmp.setOutputDataRate(BMP3_ODR_50_HZ);
+
+  Serial.println("BMP3XX initialized");
 }
 
 void loop() {
   if (!bmp.performReading()) {
-    Serial.println("BMP390 讀取失敗");
-    delay(100);
+    Serial.println("Failed to perform reading");
     return;
   }
 
-  float temperature = bmp.temperature; // °C
-  float pressure = bmp.pressure / 100.0; // hPa
+  Serial.print("Temperature = ");
+  Serial.print(bmp.temperature);
+  Serial.println(" *C");
 
-  Serial.print("Temperature °C: "); Serial.println(temperature);
-  Serial.print("Pressure hPa: "); Serial.println(pressure);
-  Serial.println("-----------------");
+  Serial.print("Pressure = ");
+  Serial.print(bmp.pressure / 100.0);
+  Serial.println(" hPa");
 
-  delay(500); // 0.5 秒更新
+  Serial.print("Altitude = ");
+  Serial.print(bmp.readAltitude(SEALEVELPRESSURE_HPA));
+  Serial.println(" m");
+
+  Serial.println();
+  delay(500);
 }
