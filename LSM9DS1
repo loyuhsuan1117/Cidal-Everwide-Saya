@@ -1,77 +1,49 @@
+
 #include <Wire.h>
-#include <SparkFunLSM9DS1.h>
-#include <math.h> // 用於三角函數計算
+#include <Adafruit_LSM9DS1.h>
+#include <Adafruit_Sensor.h>
 
-LSM9DS1 imu;
-
-// 磁偏角補正 (以台北為例約為 -4.8 度，建議根據所在位置修改)
-// 查詢網址：http://www.ngdc.noaa.gov/geomag-web/#declination
-#define DECLINATION -4.8 
+// 建立感測器物件
+Adafruit_LSM9DS1 lsm = Adafruit_LSM9DS1();
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial);
 
-  Wire.begin();
-  // 提升 I2C 速度至 400kHz，對於 1km 火箭數據紀錄較理想
-  Wire.setClock(400000); 
-
-  // 初始化 IMU (使用 I2C 位址)
-  if (!imu.begin(0x6A, 0x1C, Wire)) {
-    Serial.println("LSM9DS1 初始化失敗！");
+  // 初始化感測器
+  if (!lsm.begin()) {
+    Serial.println("找不到 LSM9DS1 感測器，請檢查接線！");
     while (1);
   }
+  Serial.println("LSM9DS1 已連線！");
 
-  Serial.println("LSM9DS1 姿態監測準備就緒...");
+  // 設定感測器範圍 (可選)
+  lsm.setupAccel(lsm.LSM9DS1_ACCELRANGE_2G);
+  lsm.setupMag(lsm.LSM9DS1_MAGGAIN_4GAUSS);
+  lsm.setupGyro(lsm.LSM9DS1_GYROSCALE_245DPS);
 }
 
 void loop() {
-  // 讀取原始數據
-  imu.readAccel();
-  imu.readGyro();
-  imu.readMag();
+  lsm.read();  /* 讀取感測器數據 */
 
-  // 1. 取得物理單位數據
-  float ax = imu.calcAccel(imu.ax);
-  float ay = imu.calcAccel(imu.ay);
-  float az = imu.calcAccel(imu.az);
-  float mx = imu.calcMag(imu.mx);
-  float my = imu.calcMag(imu.my);
-  float mz = imu.calcMag(imu.mz);
+  /* 取得感測器事件物件 */
+  sensors_event_t a, m, g, temp;
+  lsm.getEvent(&a, &m, &g, &temp);
 
-  // 2. 計算姿態角 (Pitch & Roll) - 基於加速度計
-  // 這裡計算的是相對於重力向量的角度
-  float roll = atan2(ay, az);
-  float pitch = atan2(-ax, sqrt(ay * ay + az * az));
+  // 1. 輸出加速度 (m/s^2)
+  Serial.print("Accel X: "); Serial.print(a.acceleration.x); Serial.print(" ");
+  Serial.print("Y: "); Serial.print(a.acceleration.y);       Serial.print(" ");
+  Serial.println("Z: "); Serial.print(a.acceleration.z);
 
-  // 3. 計算航向角 (Heading) - 基於磁力計
-  float heading;
-  if (my == 0)
-    heading = (mx < 0) ? PI : 0;
-  else
-    heading = atan2(mx, my);
+  // 2. 輸出陀螺儀 (rad/s)
+  Serial.print("Gyro X: "); Serial.print(g.gyro.x);
+  Serial.print(" Y: "); Serial.print(g.gyro.y);
+  Serial.println(" Z: "); Serial.print(g.gyro.z);
 
-  heading -= DECLINATION * PI / 180.0;
+  // 3. 輸出磁力計 (uT)
+  Serial.print("Mag X: "); Serial.print(m.magnetic.x);
+  Serial.print(" Y: "); Serial.print(m.magnetic.y);
+  Serial.println(" Z: "); Serial.print(m.magnetic.z);
 
-  if (heading > PI) heading -= (2 * PI);
-  else if (heading < -PI) heading += (2 * PI);
-
-  // 4. 轉換為弧度為度數
-  pitch *= 180.0 / PI;
-  roll  *= 180.0 / PI;
-  heading *= 180.0 / PI;
-
-  // 5. 輸出結果至序列監視器
-  Serial.print("姿態 [P, R]: ");
-  Serial.print(pitch, 2); Serial.print(", ");
-  Serial.print(roll, 2);
-  Serial.print(" | 航向 [H]: ");
-  Serial.print(heading, 2);
-  
-  // 同時顯示加速度 (確認火箭上升力)
-  Serial.print(" | Accel Z: ");
-  Serial.print(az, 2); Serial.println(" g");
-
-  // 移除 delay(200)，讓紀錄頻率最大化，或使用小型延遲以利觀察
-  delay(100); 
+  Serial.println("------------------------------------");
+  delay(500);
 }
