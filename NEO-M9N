@@ -1,1 +1,59 @@
+#include <TinyGPS++.h>
 
+// 定義 GPS 使用的硬體序列埠 (UART2)
+// ESP32-S3 可以自由定義腳位
+#define RXD2 18
+#define TXD2 17
+
+// 建立 GPS 物件
+TinyGPSPlus gps;
+
+// 使用 ESP32 的第二組硬體序列埠
+HardwareSerial neogps(2);
+
+void setup() {
+  // 1. 初始化電腦通訊 (S3 USB CDC)
+  Serial.begin(115200);
+  while (!Serial) delay(10); // 等待 Serial Monitor 開啟
+
+  // 2. 初始化 GPS 通訊 (NEO-M9N 預設通常是 9600 或 38400)
+  // 參數：波特率, 模式, RX, TX
+  neogps.begin(9600, SERIAL_8N1, RXD2, TXD2);
+
+  Serial.println("ESP32-S3 NEO-M9N 測試開始...");
+}
+
+void loop() {
+  // 讀取 GPS 模組傳來的數據
+  while (neogps.available() > 0) {
+    if (gps.encode(neogps.read())) {
+      displayInfo();
+    }
+  }
+
+  // 如果 5 秒內都沒讀到 GPS 數據，檢查接線
+  if (millis() > 5000 && gps.charsProcessed() < 10) {
+    Serial.println("偵測不到 GPS 模組，請檢查接線 (TX/RX 是否接反)！");
+    delay(5000);
+  }
+}
+
+void displayInfo() {
+  Serial.print("地點: "); 
+  if (gps.location.isValid()) {
+    Serial.print(gps.location.lat(), 6);
+    Serial.print(",");
+    Serial.print(gps.location.lng(), 6);
+  } else {
+    Serial.print("尚未定位 (請到戶外測試)");
+  }
+
+  Serial.print("  高度: ");
+  if (gps.altitude.isValid()) {
+    Serial.print(gps.altitude.meters());
+    Serial.print("m");
+  }
+
+  Serial.print("  衛星數量: ");
+  Serial.println(gps.satellites.value());
+}
