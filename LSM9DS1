@@ -1,1 +1,49 @@
 
+#include <Wire.h>
+#include <Adafruit_LSM9DS1.h>
+#include <Adafruit_Sensor.h>
+
+// 建立感測器物件
+Adafruit_LSM9DS1 lsm = Adafruit_LSM9DS1();
+
+void setup() {
+  Serial.begin(115200);
+
+  // 初始化感測器
+  if (!lsm.begin()) {
+    Serial.println("找不到 LSM9DS1 感測器，請檢查接線！");
+    while (1);
+  }
+  Serial.println("LSM9DS1 已連線！");
+
+  // 設定感測器範圍 (可選)
+  lsm.setupAccel(lsm.LSM9DS1_ACCELRANGE_2G);
+  lsm.setupMag(lsm.LSM9DS1_MAGGAIN_4GAUSS);
+  lsm.setupGyro(lsm.LSM9DS1_GYROSCALE_245DPS);
+}
+
+void loop() {
+  lsm.read();  /* 讀取感測器數據 */
+
+  /* 取得感測器事件物件 */
+  sensors_event_t a, m, g, temp;
+  lsm.getEvent(&a, &m, &g, &temp);
+
+  // 1. 輸出加速度 (m/s^2)
+  Serial.print("Accel X: "); Serial.print(a.acceleration.x); Serial.print(" ");
+  Serial.print("Y: "); Serial.print(a.acceleration.y);       Serial.print(" ");
+  Serial.println("Z: "); Serial.print(a.acceleration.z);
+
+  // 2. 輸出陀螺儀 (rad/s)
+  Serial.print("Gyro X: "); Serial.print(g.gyro.x);
+  Serial.print(" Y: "); Serial.print(g.gyro.y);
+  Serial.println(" Z: "); Serial.print(g.gyro.z);
+
+  // 3. 輸出磁力計 (uT)
+  Serial.print("Mag X: "); Serial.print(m.magnetic.x);
+  Serial.print(" Y: "); Serial.print(m.magnetic.y);
+  Serial.println(" Z: "); Serial.print(m.magnetic.z);
+
+  Serial.println("------------------------------------");
+  delay(500);
+}
