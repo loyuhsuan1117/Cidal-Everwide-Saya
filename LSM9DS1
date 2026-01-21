@@ -1,4 +1,3 @@
-
 #include <Wire.h>
 #include <Adafruit_LSM9DS1.h>
 #include <Adafruit_Sensor.h>
@@ -7,42 +6,45 @@
 Adafruit_LSM9DS1 lsm = Adafruit_LSM9DS1();
 
 void setup() {
+  // 1. 啟動序列埠並等待 (解決亂碼與沒看到東西的問題)
   Serial.begin(115200);
+  unsigned long timeout = millis();
+  while (!Serial && (millis() - timeout < 3000)); 
+  Serial.println("\n--- 系統啟動中 ---");
 
-  // 初始化感測器
+  // 2. 指定 S3 的正確 I2C 腳位 (SDA=8, SCL=9)
+  Wire.begin(4, 5); 
+
+  // 3. 初始化感測器 (手動傳入 I2C 位址)
+  // 如果 begin() 失敗，可以試著換成 lsm.begin(0x6B) 或 lsm.begin(0x6A)
   if (!lsm.begin()) {
-    Serial.println("找不到 LSM9DS1 感測器，請檢查接線！");
-    while (1);
+    Serial.println("找不到 LSM9DS1，請檢查：");
+    Serial.println("1. 線路：SDA接8, SCL接9, VCC接3.3V");
+    Serial.println("2. 位址：某些模組需要指定 0x6B");
+   //while (1) delay(10);
   }
   Serial.println("LSM9DS1 已連線！");
 
-  // 設定感測器範圍 (可選)
   lsm.setupAccel(lsm.LSM9DS1_ACCELRANGE_2G);
   lsm.setupMag(lsm.LSM9DS1_MAGGAIN_4GAUSS);
   lsm.setupGyro(lsm.LSM9DS1_GYROSCALE_245DPS);
 }
 
 void loop() {
-  lsm.read();  /* 讀取感測器數據 */
+  lsm.read(); 
 
-  /* 取得感測器事件物件 */
   sensors_event_t a, m, g, temp;
   lsm.getEvent(&a, &m, &g, &temp);
 
-  // 1. 輸出加速度 (m/s^2)
-  Serial.print("Accel X: "); Serial.print(a.acceleration.x); Serial.print(" ");
-  Serial.print("Y: "); Serial.print(a.acceleration.y);       Serial.print(" ");
-  Serial.println("Z: "); Serial.print(a.acceleration.z);
+  // 輸出加速度
+  Serial.print("Accel X:"); Serial.print(a.acceleration.x); 
+  Serial.print(" Y:"); Serial.print(a.acceleration.y);
+  Serial.print(" Z:"); Serial.println(a.acceleration.z);
 
-  // 2. 輸出陀螺儀 (rad/s)
-  Serial.print("Gyro X: "); Serial.print(g.gyro.x);
-  Serial.print(" Y: "); Serial.print(g.gyro.y);
-  Serial.println(" Z: "); Serial.print(g.gyro.z);
-
-  // 3. 輸出磁力計 (uT)
-  Serial.print("Mag X: "); Serial.print(m.magnetic.x);
-  Serial.print(" Y: "); Serial.print(m.magnetic.y);
-  Serial.println(" Z: "); Serial.print(m.magnetic.z);
+  // 輸出陀螺儀
+  Serial.print("Gyro X:"); Serial.print(g.gyro.x);
+  Serial.print(" Y:"); Serial.print(g.gyro.y);
+  Serial.print(" Z:"); Serial.println(g.gyro.z);
 
   Serial.println("------------------------------------");
   delay(500);
