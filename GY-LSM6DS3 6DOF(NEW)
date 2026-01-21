@@ -1,0 +1,35 @@
+#include "SparkFunLSM6DS3.h"
+#include "Wire.h"
+
+// 建立感測器物件
+LSM6DS3 myIMU(I2C_MODE, 0x6A);    // 預設 I2C 位址通常為 0x6A
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000); // 等待序列埠穩定
+  Serial.println("LSM6DS3 測試開始...");
+
+  // 初始化 I2C (指定 ESP32-S3 的 SDA, SCL 引腳)
+  Wire.begin(8, 9); 
+
+  if (myIMU.begin() != 0) {
+    Serial.println("感測器初始化失敗，請檢查接線！");
+    while (1);
+  } else {
+    Serial.println("LSM6DS3 初始化成功。");
+  }
+}
+
+void loop() {
+  // 加速度數據 (g)
+  Serial.print("加速度 X: "); Serial.print(myIMU.readFloatAccelX(), 4);
+  Serial.print(" Y: "); Serial.print(myIMU.readFloatAccelY(), 4);
+  Serial.print(" Z: "); Serial.println(myIMU.readFloatAccelZ(), 4);
+
+  // 陀螺儀數據 (DPS - 度/秒)
+  Serial.print("陀螺儀 X: "); Serial.print(myIMU.readFloatGyroX(), 4);
+  Serial.print(" Y: "); Serial.print(myIMU.readFloatGyroY(), 4);
+  Serial.print(" Z: "); Serial.println(myIMU.readFloatGyroZ(), 4);
+
+  delay(200); // 每一秒更新 5 次
+}
