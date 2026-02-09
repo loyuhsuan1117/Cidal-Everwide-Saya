@@ -1,27 +1,25 @@
 #include <Wire.h>
 #include "LSM6DS3.h"
 
-// 建立 LSM6DS3 物件
-LSM6DS3 imu(I2C_MODE);
+LSM6DS3 imu(I2C_MODE, 0x6B); // 指定正確 I2C 地址
 
 void setup() {
   Serial.begin(115200);
-  Wire.begin(21, 22); // ESP32-S3 SDA/SCL
+  delay(2000);
+  Wire.begin(8, 9); // ESP32-S3 SDA=8, SCL=9
 
   if (imu.begin() != IMU_SUCCESS) {
-    Serial.println("LSM6DS3 初始化失敗");
-    while (1);
+    Serial.println("LSM6DS3 初始化失敗，請檢查接線");
+  } else {
+    Serial.println("LSM6DS3 初始化成功");
   }
-  Serial.println("LSM6DS3 初始化成功");
 }
 
 void loop() {
-  // 讀取加速度計
   float ax = imu.readFloatAccelX();
   float ay = imu.readFloatAccelY();
   float az = imu.readFloatAccelZ();
 
-  // 讀取陀螺儀
   float gx = imu.readFloatGyroX();
   float gy = imu.readFloatGyroY();
   float gz = imu.readFloatGyroZ();
@@ -30,5 +28,5 @@ void loop() {
   Serial.print("GYRO dps: "); Serial.print(gx); Serial.print(", "); Serial.print(gy); Serial.print(", "); Serial.println(gz);
   Serial.println("-----------------");
 
-  delay(100);
+  delay(200); // 每秒 5 次更新
 }
