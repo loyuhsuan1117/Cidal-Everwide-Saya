@@ -2,8 +2,8 @@
 
 // 定義 GPS 使用的硬體序列埠 (UART2)
 // ESP32-S3 可以自由定義腳位
-#define RXD2 18
-#define TXD2 17
+#define RXD2 4
+#define TXD2 5
 
 // 建立 GPS 物件
 TinyGPSPlus gps;
@@ -18,7 +18,7 @@ void setup() {
 
   // 2. 初始化 GPS 通訊 (NEO-M9N 預設通常是 9600 或 38400)
   // 參數：波特率, 模式, RX, TX
-  neogps.begin(9600, SERIAL_8N1, RXD2, TXD2);
+  neogps.begin(38400, SERIAL_8N1, RXD2, TXD2);
 
   Serial.println("ESP32-S3 NEO-M9N 測試開始...");
 }
