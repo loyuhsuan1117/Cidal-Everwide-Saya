@@ -7,7 +7,7 @@ Adafruit_BMP3XX bmp;
 
 void setup() {
   Serial.begin(115200);
-  Wire.begin(21, 22); // ESP32-S3 SDA=21, SCL=22
+  Wire.begin(8, 9); // ESP32-S3 SDA=8, SCL=9
 
   if (!bmp.begin_I2C()) {
     Serial.println("BMP390 初始化失敗");
@@ -38,4 +38,3 @@ void loop() {
 
   delay(500); // 0.5 秒更新
 }
-
