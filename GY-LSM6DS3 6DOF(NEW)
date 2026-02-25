@@ -1,35 +1,98 @@
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
 #include "SparkFunLSM6DS3.h"
-#include "Wire.h"
 
-// 建立感測器物件
-LSM6DS3 myIMU(I2C_MODE, 0x6A);    // 預設 I2C 位址通常為 0x6A
+
+// ===== SD 卡接線設定 (ESP32-S3) =====
+#define SD_CS   15
+#define SD_SCK  14
+#define SD_MISO 12
+#define SD_MOSI 13
+
+
+// ===== 感測器設定 =====
+LSM6DS3 myIMU(I2C_MODE, 0x6A); // 建立 LSM6DS3 物件
+File dataFile;
+
 
 void setup() {
   Serial.begin(115200);
-  delay(1000); // 等待序列埠穩定
-  Serial.println("LSM6DS3 測試開始...");
+  delay(1000);
 
-  // 初始化 I2C (指定 ESP32-S3 的 SDA, SCL 引腳)
-  Wire.begin(8, 9); 
 
+  // 1. 初始化 I2C (SDA=8, SCL=9)
+  Wire.begin(8, 9);
+
+
+  // 2. 初始化 LSM6DS3
+  Serial.println("LSM6DS3 初始化中...");
   if (myIMU.begin() != 0) {
-    Serial.println("感測器初始化失敗，請檢查接線！");
+    Serial.println("LSM6DS3 初始化失敗，請檢查接線！");
     while (1);
+  }
+  Serial.println("LSM6DS3 初始化成功");
+
+
+  // 3. 初始化 SPI 與 SD 卡
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  Serial.println("SD 卡初始化中...");
+  if (!SD.begin(SD_CS)) {
+    Serial.println("SD 卡初始化失敗");
+    return;
+  }
+  Serial.println("SD 卡初始化成功");
+
+
+  // 4. 建立檔案與寫入 CSV 標題
+  dataFile = SD.open("/lsm6ds3_data.csv", FILE_WRITE);
+  if (dataFile) {
+    // 欄位：時間, 加速度(X,Y,Z), 陀螺儀(X,Y,Z)
+    dataFile.println("Time_ms,AccelX_g,AccelY_g,AccelZ_g,GyroX_dps,GyroY_dps,GyroZ_dps");
+    dataFile.close();
+    Serial.println("CSV 標題寫入成功");
   } else {
-    Serial.println("LSM6DS3 初始化成功。");
+    Serial.println("無法建立檔案");
   }
 }
 
+
 void loop() {
-  // 加速度數據 (g)
-  Serial.print("加速度 X: "); Serial.print(myIMU.readFloatAccelX(), 4);
-  Serial.print(" Y: "); Serial.print(myIMU.readFloatAccelY(), 4);
-  Serial.print(" Z: "); Serial.println(myIMU.readFloatAccelZ(), 4);
+  // 讀取數據
+  float ax = myIMU.readFloatAccelX();
+  float ay = myIMU.readFloatAccelY();
+  float az = myIMU.readFloatAccelZ();
+  float gx = myIMU.readFloatGyroX();
+  float gy = myIMU.readFloatGyroY();
+  float gz = myIMU.readFloatGyroZ();
 
-  // 陀螺儀數據 (DPS - 度/秒)
-  Serial.print("陀螺儀 X: "); Serial.print(myIMU.readFloatGyroX(), 4);
-  Serial.print(" Y: "); Serial.print(myIMU.readFloatGyroY(), 4);
-  Serial.print(" Z: "); Serial.println(myIMU.readFloatGyroZ(), 4);
 
-  delay(200); // 每一秒更新 5 次
+  // 序列印出 (除錯用)
+  Serial.print("Accel: "); Serial.print(ax, 3); Serial.print(", "); Serial.print(ay, 3); Serial.print(", "); Serial.println(az, 3);
+ 
+  // 寫入 SD 卡
+  dataFile = SD.open("/lsm6ds3_data.csv", FILE_APPEND);
+  if (dataFile) {
+    unsigned long now = millis();
+    dataFile.print(now);
+    dataFile.print(",");
+   
+    // 寫入加速度
+    dataFile.print(ax, 4); dataFile.print(",");
+    dataFile.print(ay, 4); dataFile.print(",");
+    dataFile.print(az, 4); dataFile.print(",");
+   
+    // 寫入陀螺儀
+    dataFile.print(gx, 4); dataFile.print(",");
+    dataFile.print(gy, 4); dataFile.print(",");
+    dataFile.println(gz, 4); // 最後一筆換行
+   
+    dataFile.close(); // 關閉檔案確保數據存入
+    Serial.println("SD 寫入成功");
+  } else {
+    Serial.println("寫入 SD 失敗");
+  }
+
+
+  delay(200); // 控制採樣頻率 (約 5Hz)
 }
