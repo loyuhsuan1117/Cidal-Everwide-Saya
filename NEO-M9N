@@ -1,59 +1,115 @@
 #include <TinyGPS++.h>
+#include <SPI.h>
+#include <SD.h>
 
-// 定義 GPS 使用的硬體序列埠 (UART2)
-// ESP32-S3 可以自由定義腳位
+// ===== GPS 設定 (使用 UART2) =====
 #define RXD2 4
 #define TXD2 5
-
-// 建立 GPS 物件
+HardwareSerial neogps(2);
 TinyGPSPlus gps;
 
-// 使用 ESP32 的第二組硬體序列埠
-HardwareSerial neogps(2);
+// ===== SD 卡接線設定 (ESP32-S3) =====
+#define SD_CS   15
+#define SD_SCK  14
+#define SD_MISO 12
+#define SD_MOSI 13
+
+File dataFile;
+const char* filename = "/gps_log.csv";
 
 void setup() {
-  // 1. 初始化電腦通訊 (S3 USB CDC)
+  // 1. 初始化電腦通訊
   Serial.begin(115200);
-  while (!Serial) delay(10); // 等待 Serial Monitor 開啟
+  while (!Serial) delay(10);
 
-  // 2. 初始化 GPS 通訊 (NEO-M9N 預設通常是 9600 或 38400)
-  // 參數：波特率, 模式, RX, TX
+  // 2. 初始化 GPS 通訊 (NEO-M9N 通常為 38400)
   neogps.begin(38400, SERIAL_8N1, RXD2, TXD2);
+  Serial.println("GPS 模組初始化中...");
 
-  Serial.println("ESP32-S3 NEO-M9N 測試開始...");
+  // 3. 初始化 SPI 與 SD 卡
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  Serial.println("正在掛載 SD 卡...");
+  
+  if (!SD.begin(SD_CS)) {
+    Serial.println("SD 卡掛載失敗！請檢查接線與格式 (FAT32)");
+    // 雖然失敗但程式不鎖死，方便透過 Serial 除錯
+  } else {
+    Serial.println("SD 卡掛載成功");
+    
+    // 4. 建立檔案與 CSV 標題
+    dataFile = SD.open(filename, FILE_WRITE);
+    if (dataFile) {
+      dataFile.println("Time_ms,Latitude,Longitude,Altitude_m,Satellites");
+      dataFile.close();
+      Serial.println("CSV 檔案建立成功");
+    }
+  }
 }
 
 void loop() {
-  // 讀取 GPS 模組傳來的數據
+  // 持續讀取 GPS 數據
   while (neogps.available() > 0) {
     if (gps.encode(neogps.read())) {
-      displayInfo();
+      saveDataToSD(); // 當解析到完整的新數據時執行儲存
     }
   }
 
-  // 如果 5 秒內都沒讀到 GPS 數據，檢查接線
+  // 檢查是否有接線問題 (5秒內無數據)
   if (millis() > 5000 && gps.charsProcessed() < 10) {
-    Serial.println("偵測不到 GPS 模組，請檢查接線 (TX/RX 是否接反)！");
-    delay(5000);
+    static unsigned long lastCheck = 0;
+    if (millis() - lastCheck > 5000) {
+      Serial.println("警告：偵測不到 GPS 數據，請檢查 TX/RX 接線！");
+      lastCheck = millis();
+    }
   }
 }
 
-void displayInfo() {
-  Serial.print("地點: "); 
-  if (gps.location.isValid()) {
-    Serial.print(gps.location.lat(), 6);
-    Serial.print(",");
-    Serial.print(gps.location.lng(), 6);
+void saveDataToSD() {
+  // 開啟檔案
+  dataFile = SD.open(filename, FILE_APPEND);
+  
+  if (dataFile) {
+    unsigned long now = millis();
+    
+    // 寫入時間
+    dataFile.print(now);
+    dataFile.print(",");
+
+    // 寫入經緯度 (如果有定位)
+    if (gps.location.isValid()) {
+      dataFile.print(gps.location.lat(), 6);
+      dataFile.print(",");
+      dataFile.print(gps.location.lng(), 6);
+    } else {
+      dataFile.print("0,0"); // 尚未定位時存入 0
+    }
+    dataFile.print(",");
+
+    // 寫入高度
+    if (gps.altitude.isValid()) {
+      dataFile.print(gps.altitude.meters());
+    } else {
+      dataFile.print("0");
+    }
+    dataFile.print(",");
+
+    // 寫入衛星數量並換行
+    dataFile.println(gps.satellites.value());
+
+    dataFile.close(); // 關閉存檔
+    
+    // 序列埠輸出監控
+    Serial.print("[SD 寫入] 衛星: ");
+    Serial.print(gps.satellites.value());
+    Serial.print(" 緯度: ");
+    Serial.println(gps.location.lat(), 6);
+    
   } else {
-    Serial.print("尚未定位 (請到戶外測試)");
+    // 開檔失敗不頻繁噴訊息，以免塞住 loop
+    static unsigned long lastError = 0;
+    if (millis() - lastError > 2000) {
+      Serial.println("錯誤：無法開啟 SD 卡檔案寫入數據");
+      lastError = millis();
+    }
   }
-
-  Serial.print("  高度: ");
-  if (gps.altitude.isValid()) {
-    Serial.print(gps.altitude.meters());
-    Serial.print("m");
-  }
-
-  Serial.print("  衛星數量: ");
-  Serial.println(gps.satellites.value());
 }
