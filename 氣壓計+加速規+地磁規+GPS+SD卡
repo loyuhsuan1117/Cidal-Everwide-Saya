@@ -1,0 +1,148 @@
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP3XX.h>
+#include <Adafruit_LSM9DS1.h>
+#include <TinyGPS++.h>
+#include "SparkFunLSM6DS3.h"
+
+// ===== 引腳定義 (ESP32-S3) =====
+#define SD_CS   15
+#define SD_SCK  14
+#define SD_MISO 12
+#define SD_MOSI 13
+
+#define RXD2 4
+#define TXD2 5
+
+// ===== 物件宣告 =====
+Adafruit_BMP3XX bmp;
+LSM6DS3 lsm6(I2C_MODE, 0x6A);      
+Adafruit_LSM9DS1 lsm9 = Adafruit_LSM9DS1(); 
+TinyGPSPlus gps;
+HardwareSerial neogps(2);
+File dataFile;
+
+const char* filename = "/super_blackbox.csv";
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial && millis() < 3000);
+
+  Serial.println("\n--- 全感測器系統啟動 ---");
+
+  // 1. 初始化 I2C (SDA=8, SCL=9)
+  Wire.begin(8, 9);
+
+  // 2. 初始化 GPS (UART2)
+  neogps.begin(38400, SERIAL_8N1, RXD2, TXD2);
+
+  // 3. 初始化 BMP390
+  if (!bmp.begin_I2C()) {
+    Serial.println("❌ BMP390 初始化失敗");
+    while (1);
+  }
+  bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
+  bmp.setPressureOversampling(BMP3_OVERSAMPLING_8X);
+  bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
+  Serial.println("✅ BMP390 初始化成功");
+
+  // 4. 初始化 LSM6DS3
+  if (lsm6.begin() != 0) {
+    Serial.println("❌ LSM6DS3 初始化失敗");
+    while (1);
+  }
+  Serial.println("✅ LSM6DS3 初始化成功");
+
+  // 5. 初始化 LSM9DS1 (磁力計)
+  if (!lsm9.begin()) {
+    Serial.println("❌ LSM9DS1 初始化失敗");
+    while (1);
+  }
+  lsm9.setupMag(lsm9.LSM9DS1_MAGGAIN_4GAUSS);
+  Serial.println("✅ LSM9DS1 初始化成功");
+
+  // 6. 初始化 SD 卡
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  if (!SD.begin(SD_CS)) {
+    Serial.println("❌ SD 卡掛載失敗！將僅輸出序列數據。");
+  } else {
+    dataFile = SD.open(filename, FILE_WRITE);
+    if (dataFile) {
+      dataFile.println("Time_ms,Lat,Lng,Alt_m,Sats,Temp_C,Press_hPa,AccX,AccY,AccZ,GyroX,GyroY,GyroZ,MagX,MagY,MagZ");
+      dataFile.close();
+      Serial.println("✅ SD 檔案與標頭建立成功");
+    }
+  }
+  Serial.println("--------------------------------------------------\n");
+}
+
+void loop() {
+  // 持續接收 GPS 串流
+  while (neogps.available() > 0) {
+    gps.encode(neogps.read());
+  }
+
+  // 每 200ms 執行一次紀錄與顯示 (5Hz)
+  static unsigned long lastLog = 0;
+  if (millis() - lastLog >= 200) {
+    lastLog = millis();
+    logAndDisplayAllData();
+  }
+}
+
+void logAndDisplayAllData() {
+  // --- 1. 讀取數據 ---
+  bmp.performReading();
+  float ax = lsm6.readFloatAccelX();
+  float ay = lsm6.readFloatAccelY();
+  float az = lsm6.readFloatAccelZ();
+  float gx = lsm6.readFloatGyroX();
+  float gy = lsm6.readFloatGyroY();
+  float gz = lsm6.readFloatGyroZ();
+
+  lsm9.read();
+  sensors_event_t a_9, m_9, g_9, t_9;
+  lsm9.getEvent(&a_9, &m_9, &g_9, &t_9);
+
+  // --- 2. 序列埠輸出 (讓你看得到的數據) ---
+  Serial.println(">>> 數據回報 <<<");
+  Serial.printf("[GPS] 衛星: %d | 緯度: %.6f | 經度: %.6f | 高度: %.1fm\n", 
+                gps.satellites.value(), gps.location.lat(), gps.location.lng(), gps.altitude.meters());
+  
+  Serial.printf("[ENV] 溫度: %.2f°C | 氣壓: %.2fhPa\n", 
+                bmp.temperature, bmp.pressure / 100.0);
+  
+  Serial.printf("[IMU] 加速: X:%.2f Y:%.2f Z:%.2f | 陀螺儀: X:%.2f Y:%.2f Z:%.2f\n", 
+                ax, ay, az, gx, gy, gz);
+  
+  Serial.printf("[MAG] 磁力計: X:%.1f Y:%.1f Z:%.1f\n", 
+                m_9.magnetic.x, m_9.magnetic.y, m_9.magnetic.z);
+
+  // --- 3. 寫入 SD 卡 ---
+  dataFile = SD.open(filename, FILE_APPEND);
+  if (dataFile) {
+    dataFile.print(millis()); dataFile.print(",");
+    dataFile.print(gps.location.lat(), 6); dataFile.print(",");
+    dataFile.print(gps.location.lng(), 6); dataFile.print(",");
+    dataFile.print(gps.altitude.meters()); dataFile.print(",");
+    dataFile.print(gps.satellites.value()); dataFile.print(",");
+    dataFile.print(bmp.temperature, 2); dataFile.print(",");
+    dataFile.print(bmp.pressure / 100.0, 2); dataFile.print(",");
+    dataFile.print(ax, 4); dataFile.print(",");
+    dataFile.print(ay, 4); dataFile.print(",");
+    dataFile.print(az, 4); dataFile.print(",");
+    dataFile.print(gx, 4); dataFile.print(",");
+    dataFile.print(gy, 4); dataFile.print(",");
+    dataFile.print(gz, 4); dataFile.print(",");
+    dataFile.print(m_9.magnetic.x, 4); dataFile.print(",");
+    dataFile.print(m_9.magnetic.y, 4); dataFile.print(",");
+    dataFile.println(m_9.magnetic.z, 4);
+    dataFile.close();
+    Serial.println("💾 狀態: 已同步儲存至 SD 卡");
+  } else {
+    Serial.println("⚠️ 狀態: SD 卡寫入失敗");
+  }
+  Serial.println("--------------------------------------------------");
+}
