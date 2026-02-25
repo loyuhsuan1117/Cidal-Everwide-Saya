@@ -1,51 +1,194 @@
 #include <Wire.h>
+
+#include <SPI.h>
+
+#include <SD.h>
+
 #include <Adafruit_LSM9DS1.h>
+
 #include <Adafruit_Sensor.h>
 
+
+
+// ===== SD 卡接線 (ESP32-S3) =====
+
+#define SD_CS 15
+
+#define SD_SCK 14
+
+#define SD_MISO 12
+
+#define SD_MOSI 13
+
+
+
 // 建立感測器物件
+
 Adafruit_LSM9DS1 lsm = Adafruit_LSM9DS1();
 
+
+
 void setup() {
-  // 1. 啟動序列埠並等待 (解決亂碼與沒看到東西的問題)
-  Serial.begin(115200);
-  unsigned long timeout = millis();
-  while (!Serial && (millis() - timeout < 3000)); 
-  Serial.println("\n--- 系統啟動中 ---");
 
-  // 2. 指定 S3 的正確 I2C 腳位 (SDA=8, SCL=9)
-  Wire.begin(4, 5); 
+Serial.begin(115200);
 
-  // 3. 初始化感測器 (手動傳入 I2C 位址)
-  // 如果 begin() 失敗，可以試著換成 lsm.begin(0x6B) 或 lsm.begin(0x6A)
-  if (!lsm.begin()) {
-    Serial.println("找不到 LSM9DS1，請檢查：");
-    Serial.println("1. 線路：SDA接8, SCL接9, VCC接3.3V");
-    Serial.println("2. 位址：某些模組需要指定 0x6B");
-   //while (1) delay(10);
-  }
-  Serial.println("LSM9DS1 已連線！");
 
-  lsm.setupAccel(lsm.LSM9DS1_ACCELRANGE_2G);
-  lsm.setupMag(lsm.LSM9DS1_MAGGAIN_4GAUSS);
-  lsm.setupGyro(lsm.LSM9DS1_GYROSCALE_245DPS);
+// 等待序列埠啟動
+
+unsigned long timeout = millis();
+
+while (!Serial && (millis() - timeout < 3000));
+
+Serial.println("\n--- 系統啟動：LSM9DS1 + SD Data Logger ---");
+
+
+
+// 1. 指定 I2C 腳位 (SDA=8, SCL=9)
+
+Wire.begin(8, 9);
+
+
+
+// 2. 初始化 LSM9DS1
+
+if (!lsm.begin()) {
+
+Serial.println("找不到 LSM9DS1，請檢查線路！");
+
+while (1);
+
 }
 
+Serial.println("LSM9DS1 初始化成功！");
+
+
+
+lsm.setupAccel(lsm.LSM9DS1_ACCELRANGE_2G);
+
+lsm.setupMag(lsm.LSM9DS1_MAGGAIN_4GAUSS);
+
+lsm.setupGyro(lsm.LSM9DS1_GYROSCALE_245DPS);
+
+
+
+// 3. SPI 與 SD 卡啟動
+
+SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+
+if (!SD.begin(SD_CS)) {
+
+Serial.println("SD 卡初始化失敗！");
+
+return;
+
+}
+
+Serial.println("SD 卡初始化成功");
+
+
+
+// 建立 CSV 標題
+
+File dataFile = SD.open("/lsm9ds1.csv", FILE_WRITE);
+
+if (dataFile) {
+
+dataFile.println("Time_ms,AX,AY,AZ,GX,GY,GZ,MX,MY,MZ");
+
+dataFile.close();
+
+}
+
+}
+
+
+
 void loop() {
-  lsm.read(); 
 
-  sensors_event_t a, m, g, temp;
-  lsm.getEvent(&a, &m, &g, &temp);
+lsm.read();
 
-  // 輸出加速度
-  Serial.print("Accel X:"); Serial.print(a.acceleration.x); 
-  Serial.print(" Y:"); Serial.print(a.acceleration.y);
-  Serial.print(" Z:"); Serial.println(a.acceleration.z);
+sensors_event_t a, m, g, temp;
 
-  // 輸出陀螺儀
-  Serial.print("Gyro X:"); Serial.print(g.gyro.x);
-  Serial.print(" Y:"); Serial.print(g.gyro.y);
-  Serial.print(" Z:"); Serial.println(g.gyro.z);
+lsm.getEvent(&a, &m, &g, &temp);
 
-  Serial.println("------------------------------------");
-  delay(500);
+
+
+// --- 1. 輸出到 Serial Monitor (可視化數據) ---
+
+Serial.println(">>> 感測器數據讀取 <<<");
+
+
+Serial.print("Accel (m/s^2): ");
+
+Serial.print("X="); Serial.print(a.acceleration.x, 2);
+
+Serial.print(" Y="); Serial.print(a.acceleration.y, 2);
+
+Serial.print(" Z="); Serial.println(a.acceleration.z, 2);
+
+
+
+Serial.print("Gyro (rad/s): ");
+
+Serial.print("X="); Serial.print(g.gyro.x, 2);
+
+Serial.print(" Y="); Serial.print(g.gyro.y, 2);
+
+Serial.print(" Z="); Serial.println(g.gyro.z, 2);
+
+
+
+Serial.print("Mag (gauss): ");
+
+Serial.print("X="); Serial.print(m.magnetic.x, 2);
+
+Serial.print(" Y="); Serial.print(m.magnetic.y, 2);
+
+Serial.print(" Z="); Serial.println(m.magnetic.z, 2);
+
+
+
+// --- 2. 寫入 SD 卡 ---
+
+File dataFile = SD.open("/lsm9ds1.csv", FILE_APPEND);
+
+if (dataFile) {
+
+dataFile.print(millis()); dataFile.print(",");
+
+dataFile.print(a.acceleration.x, 4); dataFile.print(",");
+
+dataFile.print(a.acceleration.y, 4); dataFile.print(",");
+
+dataFile.print(a.acceleration.z, 4); dataFile.print(",");
+
+dataFile.print(g.gyro.x, 4); dataFile.print(",");
+
+dataFile.print(g.gyro.y, 4); dataFile.print(",");
+
+dataFile.print(g.gyro.z, 4); dataFile.print(",");
+
+dataFile.print(m.magnetic.x, 4); dataFile.print(",");
+
+dataFile.print(m.magnetic.y, 4); dataFile.print(",");
+
+dataFile.println(m.magnetic.z, 4);
+
+
+dataFile.close();
+
+Serial.println("狀態: 已存入 SD 卡");
+
+} else {
+
+Serial.println("狀態: SD 卡寫入失敗！");
+
+}
+
+
+
+Serial.println("------------------------------------");
+
+delay(500);
+
 }
