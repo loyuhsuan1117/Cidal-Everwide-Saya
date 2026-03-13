@@ -1,0 +1,57 @@
+#include <SPI.h>
+#include <LoRa.h>
+
+// ===== 引腳定義 (建議與發射端一致) =====
+#define LORA_CS    2
+#define LORA_RST   0
+#define LORA_DIO0  35
+
+// 如果接收端是另一款 ESP32，且 SPI 腳位不同，請修改這裡
+// 若同樣是 S3 且接法相同，則維持不變
+#define SCK     14
+#define MISO    12
+#define MOSI    13
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial);
+
+  Serial.println("--- LoRa 數據接收站 啟動 ---");
+
+  // 初始化 SPI (確保與發射端腳位對應)
+  SPI.begin(SCK, MISO, MOSI, LORA_CS);
+
+  // 初始化 LoRa
+  LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
+
+  if (!LoRa.begin(433E6)) { // 頻率必須與發射端完全相同
+    Serial.println("❌ LoRa 初始化失敗，請檢查接線");
+    while (1);
+  }
+
+  Serial.println("✅ LoRa 初始化成功，監聽中...");
+}
+void loop() {
+  // 1. 檢查是否有封包進來
+  int packetSize = LoRa.parsePacket();
+
+  if (packetSize) {
+    // 發現封包！
+    Serial.print(">>> [收到封包] 長度: ");
+    Serial.print(packetSize);
+    Serial.print(" bytes | RSSI: ");
+    Serial.println(LoRa.packetRssi());
+
+    // 2. 讀取封包內容並轉成字串
+    String incoming = "";
+    while (LoRa.available()) {
+      incoming += (char)LoRa.read(); // 一個字節一個字節讀取並組合
+    }
+
+    // 3. 印出內容（這就是你發射端傳過來的 Alt, Lat, Lng...）
+    Serial.print("內容數據: ");
+    Serial.println(incoming);
+
+    Serial.println("----------------------------------");
+  }
+}
