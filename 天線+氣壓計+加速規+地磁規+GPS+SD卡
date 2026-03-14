@@ -9,15 +9,14 @@
 #include <LoRa.h> 
 
 // ===== 引腳定義 (ESP32-S3) =====
-#define SD_CS    15
-#define SD_SCK   14
-#define SD_MISO  12
-#define SD_MOSI  13
+#define SD_CS     15
+#define SD_SCK    14
+#define SD_MISO   12
+#define SD_MOSI   13
 
-// LoRa 引腳
-#define LORA_CS     2
-#define LORA_RST    0
-#define LORA_DIO0   35
+#define LORA_CS      2
+#define LORA_RST     0
+#define LORA_DIO0    35
 
 #define RXD2 4
 #define TXD2 5
@@ -34,39 +33,28 @@ const char* filename = "/super_blackbox.csv";
 
 void setup() {
   Serial.begin(115200);
-  delay(1000); 
+  delay(2000); 
 
-  Serial.println("\n--- 全感測器系統啟動 (含 LoRa 遠端同步) ---");
+  pinMode(SD_CS, OUTPUT);
+  pinMode(LORA_CS, OUTPUT);
+  digitalWrite(SD_CS, HIGH);
+  digitalWrite(LORA_CS, HIGH);
 
-  // 1. 初始化 I2C
+  Serial.println("\n--- 系統啟動：CSV 寫入優化版 ---");
+
   Wire.begin(8, 9);
-
-  // 2. 初始化 GPS
   neogps.begin(38400, SERIAL_8N1, RXD2, TXD2);
 
-  // 3. 初始化感測器 (不使用死循環，確保斷電自動恢復)
-  if (!bmp.begin_I2C()) Serial.println("⚠️ BMP390 初始化失敗");
-  else {
-    bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
-    bmp.setPressureOversampling(BMP3_OVERSAMPLING_8X);
-    bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
-    Serial.println("✅ BMP390 初始化成功");
-  }
+  if (!bmp.begin_I2C()) Serial.println("⚠️ BMP390 失敗");
+  if (lsm6.begin() != 0) Serial.println("⚠️ LSM6DS3 失敗");
+  if (!lsm9.begin()) Serial.println("⚠️ LSM9DS1 失敗");
+  else lsm9.setupMag(lsm9.LSM9DS1_MAGGAIN_4GAUSS);
 
-  if (lsm6.begin() != 0) Serial.println("⚠️ LSM6DS3 初始化失敗");
-  else Serial.println("✅ LSM6DS3 初始化成功");
-
-  if (!lsm9.begin()) Serial.println("⚠️ LSM9DS1 初始化失敗");
-  else {
-    lsm9.setupMag(lsm9.LSM9DS1_MAGGAIN_4GAUSS);
-    Serial.println("✅ LSM9DS1 初始化成功");
-  }
-
-  // 4. 初始化 SD 卡
   SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
-  if (!SD.begin(SD_CS)) {
+  if (!SD.begin(SD_CS, SPI, 1000000)) {
     Serial.println("❌ SD 卡掛載失敗");
   } else {
+    // 如果檔案已存在，先不刪除，但建議你手動在電腦上清空一次卡片
     if (!SD.exists(filename)) {
       dataFile = SD.open(filename, FILE_WRITE);
       if (dataFile) {
@@ -77,13 +65,12 @@ void setup() {
     Serial.println("✅ SD 卡準備就緒");
   }
 
-  // 5. 初始化 LoRa
   LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
   if (!LoRa.begin(433E6)) {
-    Serial.println("❌ LoRa 初始化失敗");
+    Serial.println("❌ LoRa 失敗");
   } else {
-    LoRa.setTxPower(18);
-    Serial.println("✅ LoRa 初始化成功");
+    LoRa.setTxPower(17);
+    Serial.println("✅ LoRa 成功");
   }
 }
 
@@ -93,8 +80,7 @@ void loop() {
   }
 
   static unsigned long lastLog = 0;
-  // 設定為 500ms (2Hz)，兼顧數據詳盡度與 LoRa 傳輸成功率
-  if (millis() - lastLog >= 500) {
+  if (millis() - lastLog >= 1000) {
     lastLog = millis();
     logAndDisplayAllData();
   }
@@ -109,45 +95,26 @@ void logAndDisplayAllData() {
   float gx = lsm6.readFloatGyroX();
   float gy = lsm6.readFloatGyroY();
   float gz = lsm6.readFloatGyroZ();
+  sensors_event_t a, m, g, t;
+  lsm9.getEvent(&a, &m, &g, &t);
 
-  lsm9.read();
-  sensors_event_t a_9, m_9, g_9, t_9;
-  lsm9.getEvent(&a_9, &m_9, &g_9, &t_9);
+  // --- 2. 建立 LoRa 報表字串 ---
+  String report = "T:" + String(millis()/1000) + "s | Sat:" + String(gps.satellites.value()) + "\n";
+  report += "P:" + String(bmp.pressure / 100.0, 1) + "hPa | Temp:" + String(bmp.temperature, 1) + "C\n";
+  report += "Acc:" + String(ax, 1) + "/" + String(ay, 1) + "/" + String(az, 1);
 
-  // --- 2. 建立格式化字串 (用於 Serial 輸出與 LoRa 發射) ---
-  // 使用 String 緩衝區來一次性處理
-  String report = ">>> 數據回報 <<<\n";
-  report += "[GPS] 衛星: " + String(gps.satellites.value()) + 
-            " | 緯度: " + String(gps.location.lat(), 6) + 
-            " | 經度: " + String(gps.location.lng(), 6) + 
-            " | 高度: " + String(gps.altitude.meters(), 1) + "m\n";
+  // --- 3. 步驟 A：SD 卡分段寫入 (修正 Excel 顯示問題) ---
+  digitalWrite(LORA_CS, HIGH); 
+  delay(10);
+  digitalWrite(SD_CS, LOW);    
   
-  report += "[ENV] 溫度: " + String(bmp.temperature, 2) + "C" +
-            " | 氣壓: " + String(bmp.pressure / 100.0, 2) + "hPa\n";
-  
-  report += "[IMU] 加速: X:" + String(ax, 2) + " Y:" + String(ay, 2) + " Z:" + String(az, 2) + 
-            " | 陀螺儀: X:" + String(gx, 2) + " Y:" + String(gy, 2) + " Z:" + String(gz, 2) + "\n";
-  
-  report += "[MAG] 磁力計: X:" + String(m_9.magnetic.x, 1) + 
-            " Y:" + String(m_9.magnetic.y, 1) + 
-            " Z:" + String(m_9.magnetic.z, 1);
-
-  // --- 3. 輸出到序列埠 (SN) ---
-  Serial.println(report);
-
-  // --- 4. 透過 LoRa 天線同步發射 ---
-  LoRa.beginPacket();
-  LoRa.print(report);
-  LoRa.endPacket();
-  Serial.println("📡 狀態: 資料包已同步發射");
-
-  // --- 5. 寫入 SD 卡 (CSV 格式保持原始簡潔，便於數據分析) ---
   dataFile = SD.open(filename, FILE_APPEND);
   if (dataFile) {
+    // 依序寫入數據項目，用逗號分隔
     dataFile.print(millis()); dataFile.print(",");
     dataFile.print(gps.location.lat(), 6); dataFile.print(",");
     dataFile.print(gps.location.lng(), 6); dataFile.print(",");
-    dataFile.print(gps.altitude.meters()); dataFile.print(",");
+    dataFile.print(gps.altitude.meters(), 1); dataFile.print(",");
     dataFile.print(gps.satellites.value()); dataFile.print(",");
     dataFile.print(bmp.temperature, 2); dataFile.print(",");
     dataFile.print(bmp.pressure / 100.0, 2); dataFile.print(",");
@@ -157,12 +124,34 @@ void logAndDisplayAllData() {
     dataFile.print(gx, 4); dataFile.print(",");
     dataFile.print(gy, 4); dataFile.print(",");
     dataFile.print(gz, 4); dataFile.print(",");
-    dataFile.print(m_9.magnetic.x, 4); dataFile.print(",");
-    dataFile.print(m_9.magnetic.y, 4); dataFile.println(m_9.magnetic.z, 4);
+    dataFile.print(m.magnetic.x, 4); dataFile.print(",");
+    dataFile.print(m.magnetic.y, 4); dataFile.print(",");
+    dataFile.println(m.magnetic.z, 4); // 最後一項必須用 println 換行
+    
     dataFile.close();
-    Serial.println("💾 狀態: 已同步儲存至 SD 卡");
+    Serial.print("💾 SD OK | ");
   } else {
-    Serial.println("⚠️ 狀態: SD 卡寫入失敗");
+    Serial.print("💾 SD FAIL | ");
+    SD.begin(SD_CS, SPI, 1000000); 
   }
+  digitalWrite(SD_CS, HIGH);
+
+  delay(150); // 給予物理緩衝
+
+  // --- 4. 步驟 B：LoRa 發射 ---
+  digitalWrite(SD_CS, HIGH);
+  delay(10);
+  digitalWrite(LORA_CS, LOW);
+  
+  if (LoRa.beginPacket()) {
+    LoRa.print(report);
+    LoRa.endPacket();
+    Serial.println("📡 LoRa OK");
+  } else {
+    Serial.println("📡 LoRa BUSY");
+  }
+  digitalWrite(LORA_CS, HIGH);
+
+  Serial.println(report);
   Serial.println("--------------------------------------------------");
 }
