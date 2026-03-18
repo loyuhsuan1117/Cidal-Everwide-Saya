@@ -1,0 +1,94 @@
+#include <SPI.h>
+#include <SD.h>
+#include <LoRa.h>
+#include "SparkFunLSM6DS3.h" 
+
+// ===== 引腳定義 (根據你的 ESP32-S3 接法) =====
+#define SD_CS      15
+#define SD_SCK     14
+#define SD_MISO    12
+#define SD_MOSI    13
+
+#define LORA_CS    2
+#define LORA_RST   0
+#define LORA_DIO0  35
+
+// ===== 物件宣告 =====
+LSM6DS3 accel(I2C_MODE, 0x6A); 
+const char* filename = "/accel_log.csv";
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(SD_CS, OUTPUT);
+  pinMode(LORA_CS, OUTPUT);
+  digitalWrite(SD_CS, HIGH);
+  digitalWrite(LORA_CS, HIGH);
+
+  Wire.begin(8, 9); // I2C 腳位
+
+  // 1. 初始化加速規
+  if (accel.begin() != 0) {
+    Serial.println("⚠️ 加速規初始化失敗");
+  }
+
+  // 2. 初始化 SD 卡
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  if (!SD.begin(SD_CS)) {
+    Serial.println("❌ SD 卡失敗");
+  } else {
+    if (!SD.exists(filename)) {
+      File f = SD.open(filename, FILE_WRITE);
+      f.println("Time_ms,AccX,AccY,AccZ"); // CSV 抬頭
+      f.close();
+    }
+    Serial.println("✅ SD 卡就緒");
+  }
+
+  // 3. 初始化 LoRa (433MHz)
+  LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
+  if (!LoRa.begin(433E6)) {
+    Serial.println("❌ LoRa 失敗");
+  } else {
+    LoRa.setTxPower(17); // 設定發射強度
+    Serial.println("✅ LoRa 就緒");
+  }
+}
+
+void loop() {
+  // 讀取加速規 (單位: g)
+  float ax = accel.readFloatAccelX();
+  float ay = accel.readFloatAccelY();
+  float az = accel.readFloatAccelZ();
+
+  // --- 製作易看報表 ---
+  String report = "T:" + String(millis()/1000) + "s\n";
+  report += "X:" + String(ax, 2) + " g\n";
+  report += "Y:" + String(ay, 2) + " g\n";
+  report += "Z:" + String(az, 2) + " g";
+
+  // --- LoRa 發送 (優先發射) ---
+  digitalWrite(SD_CS, HIGH); 
+  digitalWrite(LORA_CS, LOW);
+  if (LoRa.beginPacket()) {
+    LoRa.print(report);
+    LoRa.endPacket();
+    Serial.println("📡 LoRa OK");
+  }
+  digitalWrite(LORA_CS, HIGH);
+
+  // --- SD 卡紀錄 ---
+  digitalWrite(LORA_CS, HIGH);
+  digitalWrite(SD_CS, LOW);
+  File dataFile = SD.open(filename, FILE_APPEND);
+  if (dataFile) {
+    dataFile.printf("%lu,%.3f,%.3f,%.3f\n", millis(), ax, ay, az);
+    dataFile.close();
+    Serial.println("💾 SD Saved");
+  }
+  digitalWrite(SD_CS, HIGH);
+
+  Serial.println(report);
+  Serial.println("-----------------");
+
+  delay(200); // 提高頻率，每秒讀取 5 次
+}
