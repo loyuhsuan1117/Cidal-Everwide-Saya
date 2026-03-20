@@ -1,0 +1,123 @@
+#include <TinyGPS++.h>
+#include <SPI.h>
+#include <SD.h>
+#include <LoRa.h>
+
+// ===== GPS 設定 (UART2) =====
+#define RXD2 4
+#define TXD2 5
+HardwareSerial neogps(2);
+TinyGPSPlus gps;
+
+// ===== SD 卡與 LoRa 共用 SPI 設定 (ESP32-S3) =====
+#define SD_CS    15
+#define LORA_CS  2
+#define SD_SCK   14
+#define SD_MISO  12
+#define SD_MOSI  13
+
+#define LORA_RST  0
+#define LORA_DIO0 35
+
+const char* filename = "/gps_lora.csv";
+unsigned long lastActionTime = 0;
+
+void setup() {
+  Serial.begin(115200);
+
+  // 初始化 CS 引腳，預設全部不選取 (High)
+  pinMode(SD_CS, OUTPUT);
+  pinMode(LORA_CS, OUTPUT);
+  digitalWrite(SD_CS, HIGH);
+  digitalWrite(LORA_CS, HIGH);
+
+  // 1. 初始化 GPS (NEO-M9N 預設 38400)
+  neogps.begin(38400, SERIAL_8N1, RXD2, TXD2);
+  Serial.println("\n--- GPS + SD + LoRa 系統啟動 ---");
+
+  // 2. 初始化 SPI (由 SD 與 LoRa 共用)
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI);
+
+  // 3. 初始化 SD 卡
+  if (!SD.begin(SD_CS)) {
+    Serial.println("❌ SD 卡掛載失敗");
+  } else {
+    if (!SD.exists(filename)) {
+      File f = SD.open(filename, FILE_WRITE);
+      f.println("Time_ms,Lat,Lng,Alt,Sats,RSSI");
+      f.close();
+    }
+    Serial.println("✅ SD 卡就緒");
+  }
+
+  // 4. 初始化 LoRa (433MHz)
+  LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
+  if (!LoRa.begin(433E6)) {
+    Serial.println("❌ LoRa 初始化失敗");
+  } else {
+    LoRa.setTxPower(17); // 設定發射功率 (2~20)，若電力不穩可調低至 14
+    Serial.println("✅ LoRa 就緒");
+  }
+}
+
+void loop() {
+  // A. 持續讀取 GPS 數據
+  while (neogps.available() > 0) {
+    gps.encode(neogps.read());
+  }
+
+  // B. 每 1 秒執行一次 存檔與發射 (避免頻繁抽電)
+  if (millis() - lastActionTime >= 1000) {
+    lastActionTime = millis();
+    
+    // 1. 準備數據字串
+    String dataMsg = "SAT:" + String(gps.satellites.value());
+    if (gps.location.isValid()) {
+      dataMsg += " | L:" + String(gps.location.lat(), 5) + "," + String(gps.location.lng(), 5);
+      dataMsg += " | A:" + String(gps.altitude.meters(), 0) + "m";
+    } else {
+      dataMsg += " | Wait Fix...";
+    }
+
+    // 2. LoRa 發射 (優先)
+    sendLoRa(dataMsg);
+
+    // 3. SD 卡紀錄
+    saveToSD();
+
+    // 4. Serial 監控輸出
+    Serial.println(">>> " + dataMsg);
+  }
+}
+
+void sendLoRa(String msg) {
+  digitalWrite(SD_CS, HIGH);  // 確保 SD 不在線
+  digitalWrite(LORA_CS, LOW); // 選取 LoRa
+  
+  if (LoRa.beginPacket()) {
+    LoRa.print(msg);
+    LoRa.endPacket();
+    Serial.print("📡 LoRa TX OK | ");
+  }
+  
+  digitalWrite(LORA_CS, HIGH);
+}
+
+void saveToSD() {
+  digitalWrite(LORA_CS, HIGH); // 確保 LoRa 不在線
+  digitalWrite(SD_CS, LOW);    // 選取 SD
+  
+  File dataFile = SD.open(filename, FILE_APPEND);
+  if (dataFile) {
+    dataFile.printf("%lu,%.6f,%.6f,%.1f,%u\n", 
+                    millis(), 
+                    gps.location.lat(), gps.location.lng(), 
+                    gps.altitude.meters(), gps.satellites.value());
+    dataFile.close();
+    Serial.println("💾 SD Saved");
+  } else {
+    Serial.println("💾 SD FAIL");
+  }
+  
+  digitalWrite(SD_CS, HIGH);
+}
