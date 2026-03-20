@@ -8,20 +8,18 @@
 #include "SparkFunLSM6DS3.h"
 #include <LoRa.h> 
 
-// ===== 引腳定義 (ESP32-S3) =====
-#define SD_CS     15
-#define SD_SCK    14
-#define SD_MISO   12
-#define SD_MOSI   13
-
+// ===== 引腳定義 (保持不變) =====
+#define SD_CS      15
+#define SD_SCK     14
+#define SD_MISO    12
+#define SD_MOSI    13
 #define LORA_CS      2
 #define LORA_RST     0
 #define LORA_DIO0    35
-
 #define RXD2 4
 #define TXD2 5
 
-// ===== 物件宣告 =====
+// ===== 物件與變數宣告 =====
 Adafruit_BMP3XX bmp;
 LSM6DS3 lsm6(I2C_MODE, 0x6A);      
 Adafruit_LSM9DS1 lsm9 = Adafruit_LSM9DS1(); 
@@ -30,6 +28,8 @@ HardwareSerial neogps(2);
 File dataFile;
 
 const char* filename = "/super_blackbox.csv";
+unsigned long logCount = 0; 
+unsigned long lastGpsPulse = 0; // 用於檢查 GPS 是否斷線
 
 void setup() {
   Serial.begin(115200);
@@ -40,7 +40,7 @@ void setup() {
   digitalWrite(SD_CS, HIGH);
   digitalWrite(LORA_CS, HIGH);
 
-  Serial.println("\n--- 系統啟動：CSV 寫入優化版 ---");
+  Serial.println("\n--- 系統啟動：全數據斷線歸零優化版 ---");
 
   Wire.begin(8, 9);
   neogps.begin(38400, SERIAL_8N1, RXD2, TXD2);
@@ -52,17 +52,16 @@ void setup() {
 
   SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
   if (!SD.begin(SD_CS, SPI, 1000000)) {
-    Serial.println("❌ SD 卡掛載失敗");
+    Serial.println("❌ SD 失敗");
   } else {
-    // 如果檔案已存在，先不刪除，但建議你手動在電腦上清空一次卡片
     if (!SD.exists(filename)) {
       dataFile = SD.open(filename, FILE_WRITE);
       if (dataFile) {
-        dataFile.println("Time_ms,Lat,Lng,Alt_m,Sats,Temp_C,Press_hPa,AccX,AccY,AccZ,GyroX,GyroY,GyroZ,MagX,MagY,MagZ");
+        dataFile.println("Count,Lat,Lng,Alt_m,Sats,Temp_C,Press_hPa,AccX,AccY,AccZ,GyroX,GyroY,GyroZ,MagX,MagY,MagZ");
         dataFile.close();
       }
     }
-    Serial.println("✅ SD 卡準備就緒");
+    Serial.println("✅ SD 準備就緒");
   }
 
   LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
@@ -77,81 +76,120 @@ void setup() {
 void loop() {
   while (neogps.available() > 0) {
     gps.encode(neogps.read());
+    lastGpsPulse = millis(); // 只要有收到字元就更新時間
   }
 
   static unsigned long lastLog = 0;
-  if (millis() - lastLog >= 1000) {
+  if (millis() - lastLog >= 500) {
     lastLog = millis();
     logAndDisplayAllData();
   }
 }
 
 void logAndDisplayAllData() {
-  // --- 1. 讀取數據 ---
-  bmp.performReading();
-  float ax = lsm6.readFloatAccelX();
-  float ay = lsm6.readFloatAccelY();
-  float az = lsm6.readFloatAccelZ();
-  float gx = lsm6.readFloatGyroX();
-  float gy = lsm6.readFloatGyroY();
-  float gz = lsm6.readFloatGyroZ();
+  logCount++;
+
+  // --- 1. 數值初始歸零 ---
+  float temp = 0, press = 0;
+  float ax = 0, ay = 0, az = 0;
+  float gx = 0, gy = 0, gz = 0;
+  float mx = 0, my = 0, mz = 0;
+  double lat = 0, lng = 0, alt = 0;
+  int sats = 0;
+
+  // --- 2. 讀取感測器數據 (斷線自動歸零邏輯) ---
+  
+  // BMP390
+  if (bmp.performReading()) {
+    temp = bmp.temperature;
+    press = bmp.pressure / 100.0;
+  }
+
+  // LSM6DS3 (加速規/陀螺儀)
+  if (lsm6.begin() == 0) { 
+    ax = lsm6.readFloatAccelX();
+    ay = lsm6.readFloatAccelY();
+    az = lsm6.readFloatAccelZ();
+    gx = lsm6.readFloatGyroX();
+    gy = lsm6.readFloatGyroY();
+    gz = lsm6.readFloatGyroZ();
+  } 
+
+  // LSM9DS1 (地磁規)
   sensors_event_t a, m, g, t;
-  lsm9.getEvent(&a, &m, &g, &t);
+  if (lsm9.begin()) { 
+    lsm9.getEvent(&a, &m, &g, &t);
+    mx = m.magnetic.x;
+    my = m.magnetic.y;
+    mz = m.magnetic.z;
+  }
 
-  // --- 2. 建立 LoRa 報表字串 ---
-  String report = "T:" + String(millis()/1000) + "s | Sat:" + String(gps.satellites.value()) + "\n";
-  report += "P:" + String(bmp.pressure / 100.0, 1) + "hPa | Temp:" + String(bmp.temperature, 1) + "C\n";
-  report += "Acc:" + String(ax, 1) + "/" + String(ay, 1) + "/" + String(az, 1);
+  // GPS 數據 (加入逾時檢查：1.5秒沒收到信號則視為斷線)
+  if (gps.location.isValid() && (millis() - lastGpsPulse < 1500)) {
+    lat = gps.location.lat();
+    lng = gps.location.lng();
+    alt = gps.altitude.meters();
+    sats = gps.satellites.value();
+  } else {
+    lat = 0; lng = 0; alt = 0; sats = 0;
+  }
 
-  // --- 3. 步驟 A：SD 卡分段寫入 (修正 Excel 顯示問題) ---
+  // --- 3. 建立 LoRa 報表字串 (包含次數、GPS、地磁) ---
+  String loraMsg = "C:" + String(logCount);
+  loraMsg += ",GPS:" + String(lat, 4) + "/" + String(lng, 4) + "/" + String(alt, 0);
+  loraMsg += ",Sat:" + String(sats);
+  loraMsg += ",P:" + String(press, 1);
+  loraMsg += ",Mag:" + String(mx, 0) + "/" + String(my, 0) + "/" + String(mz, 0);
+
+  // --- 4. Serial Monitor 詳細顯示 ---
+  Serial.println("========================================");
+  Serial.print("第 "); Serial.print(logCount); Serial.println(" 次數據紀錄：");
+  Serial.print("📍 GPS: "); Serial.print(lat, 6); Serial.print(", "); Serial.print(lng, 6); Serial.print(" | Sat: "); Serial.println(sats);
+  Serial.print("☁️ 環境: "); Serial.print(press); Serial.print(" hPa | "); Serial.print(temp); Serial.println(" C");
+  Serial.print("🏃 加速度: "); Serial.print(ax); Serial.print(", "); Serial.print(ay); Serial.print(", "); Serial.println(az);
+  Serial.print("🧲 磁力計: "); Serial.print(mx); Serial.print(", "); Serial.print(my); Serial.print(", "); Serial.println(mz);
+
+  // --- 5. SD 卡寫入 ---
   digitalWrite(LORA_CS, HIGH); 
-  delay(10);
+  delay(5);
   digitalWrite(SD_CS, LOW);    
   
   dataFile = SD.open(filename, FILE_APPEND);
   if (dataFile) {
-    // 依序寫入數據項目，用逗號分隔
-    dataFile.print(millis()); dataFile.print(",");
-    dataFile.print(gps.location.lat(), 6); dataFile.print(",");
-    dataFile.print(gps.location.lng(), 6); dataFile.print(",");
-    dataFile.print(gps.altitude.meters(), 1); dataFile.print(",");
-    dataFile.print(gps.satellites.value()); dataFile.print(",");
-    dataFile.print(bmp.temperature, 2); dataFile.print(",");
-    dataFile.print(bmp.pressure / 100.0, 2); dataFile.print(",");
+    dataFile.print(logCount); dataFile.print(",");
+    dataFile.print(lat, 6); dataFile.print(",");
+    dataFile.print(lng, 6); dataFile.print(",");
+    dataFile.print(alt, 1); dataFile.print(",");
+    dataFile.print(sats); dataFile.print(",");
+    dataFile.print(temp, 2); dataFile.print(",");
+    dataFile.print(press, 2); dataFile.print(",");
     dataFile.print(ax, 4); dataFile.print(",");
     dataFile.print(ay, 4); dataFile.print(",");
     dataFile.print(az, 4); dataFile.print(",");
     dataFile.print(gx, 4); dataFile.print(",");
     dataFile.print(gy, 4); dataFile.print(",");
     dataFile.print(gz, 4); dataFile.print(",");
-    dataFile.print(m.magnetic.x, 4); dataFile.print(",");
-    dataFile.print(m.magnetic.y, 4); dataFile.print(",");
-    dataFile.println(m.magnetic.z, 4); // 最後一項必須用 println 換行
+    dataFile.print(mx, 4); dataFile.print(",");
+    dataFile.print(my, 4); dataFile.print(",");
+    dataFile.println(mz, 4); 
     
     dataFile.close();
-    Serial.print("💾 SD OK | ");
+    Serial.print("💾 SD: OK | ");
   } else {
-    Serial.print("💾 SD FAIL | ");
-    SD.begin(SD_CS, SPI, 1000000); 
+    Serial.print("💾 SD: FAIL | ");
   }
   digitalWrite(SD_CS, HIGH);
 
-  delay(150); // 給予物理緩衝
+  delay(50); 
 
-  // --- 4. 步驟 B：LoRa 發射 ---
-  digitalWrite(SD_CS, HIGH);
-  delay(10);
+  // --- 6. LoRa 發射 ---
   digitalWrite(LORA_CS, LOW);
-  
   if (LoRa.beginPacket()) {
-    LoRa.print(report);
+    LoRa.print(loraMsg);
     LoRa.endPacket();
-    Serial.println("📡 LoRa OK");
+    Serial.println("📡 LoRa: OK");
   } else {
-    Serial.println("📡 LoRa BUSY");
+    Serial.println("📡 LoRa: BUSY");
   }
   digitalWrite(LORA_CS, HIGH);
-
-  Serial.println(report);
-  Serial.println("--------------------------------------------------");
 }
