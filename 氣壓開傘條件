@@ -7,7 +7,7 @@
 Adafruit_BMP3XX bmp;
 
 // ===== 測試用參數 (室內模擬專用) =====
-const float ARMING_ALT = 1.5;       // 超過 1.5 公尺即進入高頻追蹤
+const float ARMING_ALT = 1.0;       // 超過 1.5 公尺即進入高頻追蹤
 const float DROP_THRESHOLD = 0.5;   // 下降 0.5 公尺即觸發開傘
 
 // ===== 全域變數 =====
