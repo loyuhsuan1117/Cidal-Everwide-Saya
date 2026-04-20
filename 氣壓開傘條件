@@ -25,7 +25,6 @@ void setup() {
   pinMode(DEPLOY_PIN, OUTPUT);
   digitalWrite(DEPLOY_PIN, LOW);
 
-  // 初始化 I2C (ESP32 Pins 8, 9)
   Wire.begin(8, 9);
   
   if (!bmp.begin_I2C()) {
@@ -33,35 +32,39 @@ void setup() {
     while (1);
   }
 
-  // 設定硬體濾波器
+  // 設定硬體濾波器 (這對穩定度很重要)
   bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
   bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
   bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
+  bmp.setOutputDataRate(BMP3_ODR_50_HZ);
 
-  // --- 關鍵：整合後的歸零校準邏輯 ---
-  delay(2000); // 等待感測器穩定
-  Serial.println("\n>>> 準備歸零，請放穩感測器不要移動...");
+  // --- 加強版自動歸零 ---
+  delay(2000); // 讓感測器熱身，這對消除開機漂移很有幫助
+  Serial.println("\n>>> 正在進行歸零校準，請保持感測器靜止...");
   
   float pSum = 0;
   int successCount = 0;
   
-  // 連續取得 50 次正確讀數來取平均
+  // 先丟棄前 10 次讀數 (讓內部的 IIR 濾波器穩定)
+  for(int i=0; i<10; i++) {
+    bmp.performReading();
+    delay(50);
+  }
+
+  // 正式採樣 50 次取平均
   while (successCount < 50) {
     if (bmp.performReading()) {
       pSum += bmp.pressure / 100.0;
       successCount++;
-      Serial.print("."); // 印出進度點
-      if (successCount % 10 == 0) Serial.println(); 
-      delay(20);
+      if (successCount % 10 == 0) Serial.print("."); 
+      delay(30); // 稍微拉開間隔，讓採樣更平均
     }
   }
   
   groundPressure = pSum / 50.0;
-  Serial.println("\n✅ 校準完成！現在高度歸零。");
-  Serial.print("基準地面氣壓為: ");
-  Serial.print(groundPressure);
-  Serial.println(" hPa");
-  Serial.println("--- 測試開始，請嘗試舉高感測器 ---");
+  
+  Serial.printf("\n✅ 校準完成！基準氣壓: %.2f hPa\n", groundPressure);
+  Serial.println("現在開始的高度應該要是 0 左右。");
 }
 
 void loop() {
