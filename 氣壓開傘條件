@@ -1,0 +1,106 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP3XX.h>
+
+// ===== 硬體定義 =====
+#define DEPLOY_PIN 6      // 開傘觸發引腳 (接火藥驅動或伺服馬達)
+Adafruit_BMP3XX bmp;
+
+// ===== 全域變數 =====
+float groundPressure = 0; // 地面基準氣壓
+float maxAlt = 0;         // 歷史最高高度
+float currentAlt = 0;     // 當前相對高度
+bool deployed = false;    // 是否已開傘
+unsigned long lastLog = 0;
+int logInterval = 500;    // 取樣間隔 (初始 500ms)
+
+// ===== 飛行狀態機 =====
+enum State {STANDBY, ASCENT, APOGEE_DETECT, DEPLOYED_STATE};
+State systemState = STANDBY;
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(DEPLOY_PIN, OUTPUT);
+  digitalWrite(DEPLOY_PIN, LOW);
+
+  // 1. 初始化 BMP390
+  Wire.begin(8, 9); // 根據你的硬體接線
+  if (!bmp.begin_I2C()) {
+    Serial.println("❌ BMP390 初始化失敗！");
+    while (1); 
+  }
+
+  // 設置 BMP390 採樣率 (過濾高頻雜訊)
+  bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
+  bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
+  bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
+  bmp.setOutputDataRate(BMP3_ODR_50_HZ);
+
+  // 2. 鎖定地面基準氣壓 (Auto-Zeroing)
+  Serial.println(">>> 正在校準地面氣壓，請保持火箭靜止...");
+  float pSum = 0;
+  for(int i=0; i<20; i++) {
+    if(bmp.performReading()) pSum += bmp.pressure / 100.0;
+    delay(50);
+  }
+  groundPressure = pSum / 20.0;
+  Serial.printf("✅ 地面基準鎖定: %.2f hPa\n", groundPressure);
+}
+
+void loop() {
+  // 根據當前狀態控制採樣頻率
+  if (millis() - lastLog >= logInterval) {
+    lastLog = millis();
+    
+    // A. 讀取與計算
+    if (bmp.performReading()) {
+      float p = bmp.pressure / 100.0;
+      // 氣壓測高公式：計算相對於地面的高度 (AGL)
+      currentAlt = 44330.0 * (1.0 - pow((p / groundPressure), 0.1903));
+    }
+
+    // B. 狀態機邏輯
+    switch (systemState) {
+      case STANDBY:
+        // 偵測到離地 20 公尺，判定為已發射
+        if (currentAlt > 20) {
+          systemState = ASCENT;
+          logInterval = 100; // 提高採樣率至 10Hz
+          Serial.println("🚀 偵測到發射！進入上升階段");
+        }
+        break;
+
+      case ASCENT:
+        if (currentAlt > maxAlt) maxAlt = currentAlt;
+        // 接近目標 1000m (例如 800m)，加大採樣率準備捕捉頂點
+        if (currentAlt > 800) {
+          systemState = APOGEE_DETECT;
+          logInterval = 50; // 提高採樣率至 20Hz
+          Serial.println("📍 進入 800m 警戒區，高頻追蹤頂點...");
+        }
+        break;
+
+      case APOGEE_DETECT:
+        if (currentAlt > maxAlt) maxAlt = currentAlt;
+        // 核心開傘邏輯：高度 > 800m 且 從最高點下降超過 2 公尺
+        if (maxAlt > 800 && (maxAlt - currentAlt) > 2.0) {
+          executeDeployment();
+        }
+        break;
+
+      case DEPLOYED_STATE:
+        logInterval = 1000; // 開傘後降低頻率
+        break;
+    }
+
+    // C. 輸出狀態 (供測試觀察)
+    Serial.printf("高度: %.2f m | 最高: %.2f m | 狀態: %d\n", currentAlt, maxAlt, systemState);
+  }
+}
+
+void executeDeployment() {
+  digitalWrite(DEPLOY_PIN, HIGH); // 輸出高電位觸發開傘
+  deployed = true;
+  systemState = DEPLOYED_STATE;
+  Serial.println("!!!!!!! [APOGEE DETECTED] 觸發開傘 !!!!!!!");
+}
