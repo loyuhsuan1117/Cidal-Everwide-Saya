@@ -1,0 +1,144 @@
+#ifdef LITTLE_ENDIAN
+#undef LITTLE_ENDIAN
+#endif
+#include <Wire.h>
+#include <DFRobot_BMI160.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_DPS310.h>
+#include <Adafruit_LIS3MDL.h>
+#include <SD.h>
+
+Adafruit_DPS310 dps;
+DFRobot_BMI160 bmi160;
+const int8_t i2c_addr = 0x69;
+Adafruit_LIS3MDL lis;
+File dataFile;
+
+void setup() {
+  Serial.begin(9600);
+  while (!Serial) {
+    delay(10);
+  }
+  Serial.println("DPS310 開始初始化...");
+  if (!dps.begin_I2C(0x77)) {
+    Serial.println("找不到 DPS310，請檢查接線！");
+    while (1) delay(10);
+  }
+  Serial.println("找到 DPS310 感測器！");
+  dps.configurePressure(DPS310_64HZ, DPS310_64SAMPLES);
+  dps.configureTemperature(DPS310_64HZ, DPS310_64SAMPLES); 
+  if (bmi160.I2cInit(i2c_addr) != BMI160_OK){
+    Serial.println("init false");
+    while(1);
+  } 
+  struct bmi160Dev dev;
+    memset(&dev, 0, sizeof(dev)); 
+
+    // 设置加速度计配置
+    dev.accelCfg.power = BMI160_ACCEL_NORMAL_MODE; 
+    dev.accelCfg.range = BMI160_ACCEL_RANGE_16G;     
+    dev.accelCfg.bw = BMI160_ACCEL_BW_NORMAL_AVG4;  
+
+
+   
+
+    // 设置陀螺仪配置
+    dev.gyroCfg.power = BMI160_GYRO_NORMAL_MODE;     
+    dev.gyroCfg.range = BMI160_GYRO_RANGE_2000_DPS;  
+    dev.gyroCfg.bw = BMI160_GYRO_BW_NORMAL_MODE;     
+
+    
+  Serial.println("LIS3MDL 磁力計測試 (Teensy 4.1)");
+  if (!lis.begin_I2C(0x1E)) {
+    Serial.println("找不到 LIS3MDL，請檢查接線！");
+    while (1) {
+      delay(10);
+    }
+  }
+  Serial.println("已找到 LIS3MDL！");
+  lis.setRange(LIS3MDL_RANGE_4_GAUSS);
+  lis.setDataRate(LIS3MDL_DATARATE_155_HZ);
+  lis.setPerformanceMode(LIS3MDL_HIGHMODE);
+  lis.setOperationMode(LIS3MDL_CONTINUOUSMODE);
+  Serial.println("初始化完成！");
+  while (!SD.begin(BUILTIN_SDCARD)) {
+    Serial.println("SD 卡初始化失敗，3 秒後重試...");
+    delay(3000);
+  }
+  Serial.println("SD 卡初始化完成");
+  dataFile = SD.open("data.csv", FILE_WRITE);
+  if (dataFile) {
+    dataFile.println("Time(s),Temp(C),Pressure(hPa),AX(g),AY(g),AZ(g),GX(dps),GY(dps),GZ(dps),MX(uT),MY(uT),MZ(uT)");
+    dataFile.close();
+  }
+}
+
+void loop() {
+  sensors_event_t temp_event, pressure_event, event;
+  float timestamp = millis() / 1000.0;
+
+  if (dps.getEvents(&temp_event, &pressure_event)) {
+    Serial.print("溫度: ");
+    Serial.print(temp_event.temperature);
+    Serial.print(" °C, ");
+
+    Serial.print("氣壓: ");
+    Serial.print(pressure_event.pressure);
+    Serial.println(" hPa");
+  } else {
+    Serial.println("讀取中...");
+  }
+  float temp = temp_event.temperature;
+  float pressure = pressure_event.pressure;
+
+  int i = 0;
+  int rslt;
+  int16_t accelGyro[6]={0}; 
+  rslt = bmi160.getAccelGyroData(accelGyro);
+  if(rslt == 0){
+  Serial.print("A[g]: ");
+    Serial.print(accelGyro[3] / 16384.0); Serial.print(",");
+    Serial.print(accelGyro[4] / 16384.0); Serial.print(",");
+    Serial.print(accelGyro[5] / 16384.0); Serial.print("  ");
+    
+    Serial.print("G[dps]: ");
+    Serial.print(accelGyro[0] /16.4); Serial.print(",");
+    Serial.print(accelGyro[1] /16.4); Serial.print(",");
+    Serial.print(accelGyro[2] /16.4); 
+
+    Serial.println(); 
+    }
+  float ax = accelGyro[3] / 16384.0;
+  float ay = accelGyro[4] / 16384.0;
+  float az = accelGyro[5] / 16384.0;
+  float gx = accelGyro[0] /16.4;
+  float gy = accelGyro[1] /16.4;
+  float gz = accelGyro[2] /16.4;
+  
+  lis.getEvent(&event);
+  Serial.print("X: ");
+  Serial.print(event.magnetic.x);
+  Serial.print(" uT, ");
+  Serial.print("Y: ");
+  Serial.print(event.magnetic.y);
+  Serial.print(" uT, ");
+  Serial.print("Z: ");
+  Serial.print(event.magnetic.z);
+  Serial.println(" uT");
+  float mx = event.magnetic.x;
+  float my = event.magnetic.y;
+  float mz = event.magnetic.z;
+
+dataFile = SD.open("data.csv", FILE_WRITE);
+  if (dataFile) {
+    dataFile.print(timestamp, 2); dataFile.print(",");
+    dataFile.print(temp, 2); dataFile.print(","); dataFile.print(pressure, 2); dataFile.print(",");
+    dataFile.print(ax, 3); dataFile.print(","); dataFile.print(ay, 3); dataFile.print(","); dataFile.print(az, 3); dataFile.print(",");
+    dataFile.print(gx, 2); dataFile.print(","); dataFile.print(gy, 2); dataFile.print(","); dataFile.print(gz, 2); dataFile.print(",");
+    dataFile.print(mx, 2); dataFile.print(","); dataFile.print(my, 2); dataFile.print(","); dataFile.println(mz, 2);
+    dataFile.close();
+  } else {
+    Serial.println("⚠️ 無法寫入 SD 卡！");
+  }
+  delay(500);
+}
