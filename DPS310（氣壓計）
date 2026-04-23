@@ -1,0 +1,42 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_DPS310.h>
+
+Adafruit_DPS310 dps;
+
+void setup() {
+  Serial.begin(9600);
+  while (!Serial) {
+    delay(10);
+  }
+
+  Serial.println("DPS310 開始初始化...");
+  if (!dps.begin_I2C(0x76)) {
+    Serial.println("找不到 DPS310，請檢查接線！");
+    while (1) delay(10);
+  }
+
+  Serial.println("找到 DPS310 感測器！");
+
+  // ★ 建議一定要設（避免 nan）
+  dps.configurePressure(DPS310_64HZ, DPS310_64SAMPLES);
+  dps.configureTemperature(DPS310_64HZ, DPS310_64SAMPLES);
+}
+
+void loop() {
+  sensors_event_t temp_event, pressure_event;
+
+  if (dps.getEvents(&temp_event, &pressure_event)) {
+    Serial.print("溫度: ");
+    Serial.print(temp_event.temperature);
+    Serial.print(" °C, ");
+
+    Serial.print("氣壓: ");
+    Serial.print(pressure_event.pressure);
+    Serial.println(" hPa");
+  } else {
+    Serial.println("讀取中...");
+  }
+
+  delay(1000);
+}
