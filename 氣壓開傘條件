@@ -1,24 +1,17 @@
 #include <Wire.h>
-#include <Adafruit_Sensor.h>
-#include <Adafruit_BMP3XX.h>
+#include "SparkFunLSM6DS3.h"
 
-// ===== 硬體定義 =====
-#define DEPLOY_PIN 6      // 開傘觸發引腳
-Adafruit_BMP3XX bmp;
+#define DEPLOY_PIN 6
+LSM6DS3 lsm6(I2C_MODE, 0x6A); 
 
-// ===== 測試用參數 (室內模擬專用) =====
-const float ARMING_ALT = 0.9;       // 超過 1.5 公尺即進入高頻追蹤
-const float DROP_THRESHOLD = 0.3;   // 下降 0.5 公尺即觸發開傘
+// 飛行邏輯變數
+bool isLaunched = false;
+unsigned long launchTime = 0;
+const unsigned long DEPLOY_DELAY = 18000; // 18秒開傘
 
-// ===== 全域變數 =====
-float groundPressure = 0; 
-float maxAlt = 0;         
-float currentAlt = 0;     
-unsigned long lastLog = 0;
-int logInterval = 500;    // 初始 500ms (2Hz)
-
-enum FlightState { STANDBY, ASCENT, APOGEE_HUNTING, DEPLOYED };
-FlightState rocketState = STANDBY;
+// 起飛判定增強
+unsigned long gForceStartTime = 0;
+const int G_FORCE_DURATION = 100; // 必須持續超過 3g 達 100 毫秒
 
 void setup() {
   Serial.begin(115200);
@@ -26,102 +19,67 @@ void setup() {
   digitalWrite(DEPLOY_PIN, LOW);
 
   Wire.begin(8, 9);
-  
-  if (!bmp.begin_I2C()) {
-    Serial.println("❌ BMP390 啟動失敗");
+  if (lsm6.begin() != 0) {
+    Serial.println("❌ LSM6DS3 啟動失敗");
     while (1);
   }
-
-  // 設定硬體濾波器 (這對穩定度很重要)
-  bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
-  bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
-  bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
-  bmp.setOutputDataRate(BMP3_ODR_50_HZ);
-
-  // --- 加強版自動歸零 ---
-  delay(2000); // 讓感測器熱身，這對消除開機漂移很有幫助
-  Serial.println("\n>>> 正在進行歸零校準，請保持感測器靜止...");
-  
-  float pSum = 0;
-  int successCount = 0;
-  
-  // 先丟棄前 10 次讀數 (讓內部的 IIR 濾波器穩定)
-  for(int i=0; i<10; i++) {
-    bmp.performReading();
-    delay(50);
-  }
-
-  // 正式採樣 50 次取平均
-  while (successCount < 50) {
-    if (bmp.performReading()) {
-      pSum += bmp.pressure / 100.0;
-      successCount++;
-      if (successCount % 10 == 0) Serial.print("."); 
-      delay(30); // 稍微拉開間隔，讓採樣更平均
-    }
-  }
-  
-  groundPressure = pSum / 50.0;
-  
-  Serial.printf("\n✅ 校準完成！基準氣壓: %.2f hPa\n", groundPressure);
-  Serial.println("現在開始的高度應該要是 0 左右。");
+  Serial.println("✅ 系統就緒：等待持續 G 力觸發起飛...");
 }
 
 void loop() {
-  if (millis() - lastLog >= logInterval) {
-    lastLog = millis();
+  // 1. 讀取加速規與計算 Total G
+  float ax = lsm6.readFloatAccelX();
+  float ay = lsm6.readFloatAccelY();
+  float az = lsm6.readFloatAccelZ();
+  
+  // 修正：C++ 中相乘必須使用 * 號，不能直接寫兩次變數名
+  float totalG = sqrt(ax * ax + ay * ay + az * az);
 
-    // 1. 取得相對高度
-    if (bmp.performReading()) {
-      float p = bmp.pressure / 100.0;
-      // 使用剛剛鎖定的地面壓計算高度差
-      currentAlt = 44330.0 * (1.0 - pow((p / groundPressure), 0.1903));
+  // 2. 判定起飛 (加入連續時間驗證)
+  if (!isLaunched) {
+    if (totalG > 3) {
+      if (gForceStartTime == 0) {
+        gForceStartTime = millis(); // 開始計時 G 力持續時間
+      }
+
+      // 如果持續時間超過 100ms
+      if (millis() - gForceStartTime >= G_FORCE_DURATION) {
+        isLaunched = true;
+        launchTime = millis(); 
+        Serial.println("\n🚀 [正式起飛] 偵測到持續推力，計時器啟動！");
+      }
+    } else {
+      gForceStartTime = 0; // 如果 G 力中斷，重置計時
     }
-
-    // 2. 測試狀態機邏輯
-    switch (rocketState) {
-      case STANDBY:
-        if (currentAlt > 0.4) { // 稍微舉高就視為啟動
-          rocketState = ASCENT;
-          Serial.println("\n[狀態] 🚀 偵測到上升！");
-        }
-        break;
-
-      case ASCENT:
-        if (currentAlt > maxAlt) maxAlt = currentAlt;
-        // 舉高超過 1.5m 模擬 800m 警戒
-        if (currentAlt > ARMING_ALT) {
-          rocketState = APOGEE_HUNTING;
-          logInterval = 50; // 切換至 20Hz 高頻
-          Serial.println("[狀態] ⚠️ 已達門檻，進入高頻追蹤模式...");
-        }
-        break;
-
-      case APOGEE_HUNTING:
-        if (currentAlt > maxAlt) maxAlt = currentAlt;
-        
-        // 核心判斷：從最高點掉下來 0.5m
-        if ((maxAlt - currentAlt) > DROP_THRESHOLD) {
-          fireParachute();
-        }
-        break;
-
-      case DEPLOYED:
-        logInterval = 1000; // 開傘後降頻
-        break;
-    }
-
-    // 3. Serial Monitor 輸出
-    Serial.print("高度: "); Serial.print(currentAlt, 2);
-    Serial.print(" m | 最高: "); Serial.print(maxAlt, 2);
-    Serial.print(" m | 狀態碼: "); Serial.println(rocketState);
   }
+
+  // 3. 處理起飛後的計時開傘
+  if (isLaunched) {
+    unsigned long elapsedTime = millis() - launchTime;
+
+    // 每秒輸出狀態
+    static unsigned long lastPrint = 0;
+    unsigned long currentSeconds = elapsedTime / 1000;
+
+    if (currentSeconds != lastPrint) {
+      lastPrint = currentSeconds;
+      // 修正：原先的 lastCount 應改為 lastPrint 或 currentSeconds
+      if (lastPrint <= 18) {
+          Serial.printf("T + %lu 秒\n", lastPrint);
+      }
+    }
+
+    // 到達 18 秒開傘
+    if (elapsedTime >= DEPLOY_DELAY) {
+      fireParachute();
+    }
+  }
+
+  delay(20); // 提高採樣頻率到 50Hz 以捕捉細微變化
 }
 
 void fireParachute() {
-  digitalWrite(DEPLOY_PIN, HIGH); 
-  rocketState = DEPLOYED;
-  Serial.println("\n************************************");
-  Serial.println("* ！！！ [偵測到頂點：觸發開傘] ！！！    *");
-  Serial.println("************************************\n");
+  digitalWrite(DEPLOY_PIN, HIGH);
+  Serial.println("\n** [T+18s：執行開傘指令] ***\n");
+  while(1); 
 }
