@@ -1,0 +1,87 @@
+#include <DFRobot_BMI160.h>
+#include <SD.h>
+#include <SPI.h>
+
+DFRobot_BMI160 bmi160;
+const int8_t i2c_addr = 0x68;
+
+// SD 卡設定
+const int chipSelect = BUILTIN_SDCARD; 
+const char* fileName = "imu_data.csv";
+
+void setup(){
+  Serial.begin(115200);
+  delay(100);
+  
+  // --- SD 卡初始化段落 ---
+  if (!SD.begin(chipSelect)) {
+    Serial.println("SD card init failed!");
+  } else {
+    // 如果檔案不存在，建立標頭
+    if (!SD.exists(fileName)) {
+      File dataFile = SD.open(fileName, FILE_WRITE);
+      if (dataFile) {
+        dataFile.println("AccX,AccY,AccZ,GyroX,GyroY,GyroZ");
+        dataFile.close();
+      }
+    }
+  }
+  // ---------------------
+
+  //init the hardware bmin160  
+  if (bmi160.softReset() != BMI160_OK){
+    Serial.println("reset false");
+    while(1);
+  }
+  
+  //set and init the bmi160 i2c address
+  if (bmi160.I2cInit(i2c_addr) != BMI160_OK){
+    Serial.println("init false");
+    while(1);
+  }
+}
+
+void loop(){  
+  int i = 0;
+  int rslt;
+  int16_t accelGyro[6]={0}; 
+  
+  //get both accel and gyro data from bmi160
+  //parameter accelGyro is the pointer to store the data
+  rslt = bmi160.getAccelGyroData(accelGyro);
+  
+  if(rslt == 0){
+    // --- 1. 你原本的序列埠輸出 ---
+    Serial.print("A[g]: ");
+    Serial.print(accelGyro[3] / 16384.0); Serial.print(",");
+    Serial.print(accelGyro[4] / 16384.0); Serial.print(",");
+    Serial.print(accelGyro[5] / 16384.0); Serial.print("  ");
+    
+    Serial.print("G[dps]: ");
+    Serial.print(accelGyro[0] * 3.14 / 180.0); Serial.print(",");
+    Serial.print(accelGyro[1] * 3.14 / 180.0); Serial.print(",");
+    Serial.print(accelGyro[2] * 3.14 / 180.0); 
+    
+    Serial.println(); 
+
+    // --- 2. 新增的 SD 卡寫入段落 ---
+    // FILE_WRITE 會自動接續檔案末尾 (Append)
+    File dataFile = SD.open(fileName, FILE_WRITE);
+    if (dataFile) {
+      // 依照你原本的計算邏輯寫入 SD 卡
+      dataFile.print(accelGyro[3] / 16384.0); dataFile.print(",");
+      dataFile.print(accelGyro[4] / 16384.0); dataFile.print(",");
+      dataFile.print(accelGyro[5] / 16384.0); dataFile.print(",");
+      dataFile.print(accelGyro[0] * 3.14 / 180.0); dataFile.print(",");
+      dataFile.print(accelGyro[1] * 3.14 / 180.0); dataFile.print(",");
+      dataFile.println(accelGyro[2] * 3.14 / 180.0);
+      
+      dataFile.close(); // 關閉存檔
+    }
+    // ----------------------------
+  }
+  else{
+    Serial.println("err");
+  }
+  delay(200);
+}
