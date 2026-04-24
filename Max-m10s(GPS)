@@ -1,0 +1,90 @@
+#include <Wire.h>
+#include <SparkFun_u-blox_GNSS_Arduino_Library.h> // 請安裝 SparkFun u-blox GNSS v3 函式庫
+
+SFE_UBLOX_GNSS myGNSS;
+
+void setup() {
+  // 開啟電腦監控序列埠
+  Serial.begin(115200);
+  while (!Serial); 
+  Serial.println("--- Teensy + MAX-M10S I2C 全數據測試 ---");
+
+  // 初始化 I2C
+  Wire.begin();
+
+  // 嘗試連接 GPS 模組
+  // MAX-M10S 的 I2C 預設位址是 0x42
+  if (myGNSS.begin() == false) {
+    Serial.println(F("錯誤：找不到 GPS 模組。請檢查接線(SDA:18, SCL:19)或電源。"));
+    while (1);
+  }
+
+  // 設定模組輸出的數據格式 (僅透過 I2C 獲取)
+  myGNSS.setI2COutput(COM_TYPE_UBX); 
+  // 設定更新頻率 (例如 5Hz, 每秒 5 次)
+  myGNSS.setNavigationFrequency(5); 
+  
+  Serial.println(F("GPS 模組連線成功！開始接收數據..."));
+}
+
+void loop() {
+  // 檢查是否有新的導航數據
+  // getPVT (Position, Velocity, Time) 是 M10S 最核心的數據包
+  if (myGNSS.getPVT()) {
+    Serial.println(F("========================================"));
+
+    // 1. 取得時間 (UTC)
+    Serial.print(F("時間: "));
+    Serial.print(myGNSS.getYear()); Serial.print("-");
+    Serial.print(myGNSS.getMonth()); Serial.print("-");
+    Serial.print(myGNSS.getDay()); Serial.print(" ");
+    Serial.print(myGNSS.getHour()); Serial.print(":");
+    Serial.print(myGNSS.getMinute()); Serial.print(":");
+    Serial.println(myGNSS.getSecond());
+
+    // 2. 取得經緯度與高度
+    // 原始數據是 long，除以 10^7 轉換為度 (degree)
+    float lat = myGNSS.getLatitude() / 10000000.0;
+    float lon = myGNSS.getLongitude() / 10000000.0;
+    float altitude = myGNSS.getAltitude() / 1000.0; // 轉為公尺
+
+    Serial.print(F("位置: "));
+    Serial.print(lat, 7);
+    Serial.print(F(", "));
+    Serial.println(lon, 7);
+    Serial.print(F("海拔: "));
+    Serial.print(altitude);
+    Serial.println(F(" m"));
+
+    // 3. 取得速度與航向
+    // 速度原始單位是 mm/s，乘以 0.0036 轉為 km/h
+    float speed = myGNSS.getGroundSpeed() * 0.0036;
+    float heading = myGNSS.getHeading() / 100000.0; // 轉為度
+
+    Serial.print(F("速度: "));
+    Serial.print(speed, 2);
+    Serial.print(F(" km/h | 航向: "));
+    Serial.print(heading, 2);
+    Serial.println(F(" 度"));
+
+    // 4. 定位品質
+    byte siv = myGNSS.getSIV(); // 衛星數量
+    float pdop = myGNSS.getPDOP() / 100.0; // 精度強弱度
+
+    Serial.print(F("衛星數: "));
+    Serial.print(siv);
+    Serial.print(F(" | 精度(PDOP): "));
+    Serial.println(pdop);
+
+    // 判斷定位狀態
+    byte fixType = myGNSS.getFixType();
+    Serial.print(F("定位狀態: "));
+    if (fixType == 0) Serial.println(F("未定位"));
+    else if (fixType == 2) Serial.println(F("2D 定位"));
+    else if (fixType == 3) Serial.println(F("3D 定位"));
+    else Serial.println(fixType);
+  }
+
+  // 稍微延遲避免洗頻
+  delay(200); 
+}
