@@ -1,90 +1,121 @@
 #include <Wire.h>
-#include <SparkFun_u-blox_GNSS_Arduino_Library.h> // 請安裝 SparkFun u-blox GNSS v3 函式庫
+#include <SPI.h>
+#include <SD.h>
+#include <SparkFun_u-blox_GNSS_Arduino_Library.h> 
 
+const int chipSelect = BUILTIN_SDCARD; 
 SFE_UBLOX_GNSS myGNSS;
+const char* fileName = "gps_data.csv";
+
+// --- 數據計數器 ---
+unsigned long dataCount = 0; 
+
+// 輔助函式：檢查檔案並初始化編號
+void checkAndCreateFile() {
+  if (!SD.exists(fileName)) {
+    File dataFile = SD.open(fileName, FILE_WRITE);
+    if (dataFile) {
+      // 寫入 CSV 標題，加入 Index 欄位
+      dataFile.println("Index,Date,Time,Latitude,Longitude,Altitude(m),Speed(km/h),SIV,PDOP");
+      dataFile.close();
+      Serial.println(F("建立新檔案並寫入標題。"));
+      dataCount = 0;
+    }
+  } else {
+    // 掃描舊檔案有幾行，讓編號續傳
+    Serial.print(F("正在掃描舊檔案以同步編號... "));
+    File dataFile = SD.open(fileName, FILE_READ);
+    if (dataFile) {
+      while (dataFile.available()) {
+        if (dataFile.read() == '\n') dataCount++;
+      }
+      dataFile.close();
+      if (dataCount > 0) dataCount--; // 扣除標題列
+      Serial.print(F("目前已累積筆數: ")); Serial.println(dataCount);
+    }
+  }
+}
 
 void setup() {
-  // 開啟電腦監控序列埠
   Serial.begin(115200);
-  while (!Serial); 
-  Serial.println("--- Teensy + MAX-M10S I2C 全數據測試 ---");
+  unsigned long startWait = millis();
+  while (!Serial && (millis() - startWait < 2000)); 
+  
+  Serial.println(F("--- Teensy GPS 數據紀錄器 (編號續傳版) ---"));
 
-  // 初始化 I2C
   Wire.begin();
-
-  // 嘗試連接 GPS 模組
-  // MAX-M10S 的 I2C 預設位址是 0x42
   if (myGNSS.begin() == false) {
-    Serial.println(F("錯誤：找不到 GPS 模組。請檢查接線(SDA:18, SCL:19)或電源。"));
+    Serial.println(F("錯誤：找不到 GPS 模組。"));
     while (1);
   }
-
-  // 設定模組輸出的數據格式 (僅透過 I2C 獲取)
-  myGNSS.setI2COutput(COM_TYPE_UBX); 
-  // 設定更新頻率 (例如 5Hz, 每秒 5 次)
-  myGNSS.setNavigationFrequency(5); 
   
-  Serial.println(F("GPS 模組連線成功！開始接收數據..."));
+  myGNSS.setI2COutput(COM_TYPE_UBX); 
+  myGNSS.setNavigationFrequency(5); 
+
+  if (!SD.begin(chipSelect)) {
+    Serial.println(F("SD 卡初始化失敗！"));
+  } else {
+    Serial.println(F("SD 卡初始化成功。"));
+    checkAndCreateFile();
+  }
 }
 
 void loop() {
-  // 檢查是否有新的導航數據
-  // getPVT (Position, Velocity, Time) 是 M10S 最核心的數據包
   if (myGNSS.getPVT()) {
-    Serial.println(F("========================================"));
+    // 每收到一次有效數據，編號 +1
+    dataCount++;
 
-    // 1. 取得時間 (UTC)
-    Serial.print(F("時間: "));
-    Serial.print(myGNSS.getYear()); Serial.print("-");
-    Serial.print(myGNSS.getMonth()); Serial.print("-");
-    Serial.print(myGNSS.getDay()); Serial.print(" ");
-    Serial.print(myGNSS.getHour()); Serial.print(":");
-    Serial.print(myGNSS.getMinute()); Serial.print(":");
-    Serial.println(myGNSS.getSecond());
-
-    // 2. 取得經緯度與高度
-    // 原始數據是 long，除以 10^7 轉換為度 (degree)
     float lat = myGNSS.getLatitude() / 10000000.0;
     float lon = myGNSS.getLongitude() / 10000000.0;
-    float altitude = myGNSS.getAltitude() / 1000.0; // 轉為公尺
-
-    Serial.print(F("位置: "));
-    Serial.print(lat, 7);
-    Serial.print(F(", "));
-    Serial.println(lon, 7);
-    Serial.print(F("海拔: "));
-    Serial.print(altitude);
-    Serial.println(F(" m"));
-
-    // 3. 取得速度與航向
-    // 速度原始單位是 mm/s，乘以 0.0036 轉為 km/h
+    float altitude = myGNSS.getAltitude() / 1000.0;
     float speed = myGNSS.getGroundSpeed() * 0.0036;
-    float heading = myGNSS.getHeading() / 100000.0; // 轉為度
+    byte siv = myGNSS.getSIV();
+    float pdop = myGNSS.getPDOP() / 100.0;
 
-    Serial.print(F("速度: "));
-    Serial.print(speed, 2);
-    Serial.print(F(" km/h | 航向: "));
-    Serial.print(heading, 2);
-    Serial.println(F(" 度"));
+    // 螢幕輸出
+    Serial.print(F("#")); Serial.print(dataCount);
+    Serial.print(F(" | Sats: ")); Serial.print(siv);
+    Serial.print(F(" | Lat: ")); Serial.println(lat, 6);
 
-    // 4. 定位品質
-    byte siv = myGNSS.getSIV(); // 衛星數量
-    float pdop = myGNSS.getPDOP() / 100.0; // 精度強弱度
+    // --- 寫入 SD 卡 ---
+    File dataFile = SD.open(fileName, FILE_WRITE);
+    if (dataFile) {
+      // 萬一檔案中途被刪除，重新補標題與重設編號
+      if (dataFile.size() == 0) {
+        dataFile.println("Index,Date,Time,Latitude,Longitude,Altitude(m),Speed(km/h),SIV,PDOP");
+        dataCount = 1;
+      }
 
-    Serial.print(F("衛星數: "));
-    Serial.print(siv);
-    Serial.print(F(" | 精度(PDOP): "));
-    Serial.println(pdop);
+      // 1. 寫入編號
+      dataFile.print(dataCount);
+      dataFile.print(",");
 
-    // 判斷定位狀態
-    byte fixType = myGNSS.getFixType();
-    Serial.print(F("定位狀態: "));
-    if (fixType == 0) Serial.println(F("未定位"));
-    else if (fixType == 2) Serial.println(F("2D 定位"));
-    else if (fixType == 3) Serial.println(F("3D 定位"));
-    else Serial.println(fixType);
+      // 2. 寫入日期與時間 (補零處理)
+      dataFile.print(myGNSS.getYear()); dataFile.print("/");
+      dataFile.print(myGNSS.getMonth()); dataFile.print("/");
+      dataFile.print(myGNSS.getDay()); dataFile.print(",");
+      
+      if (myGNSS.getHour() < 10) dataFile.print("0");
+      dataFile.print(myGNSS.getHour()); dataFile.print(":");
+      if (myGNSS.getMinute() < 10) dataFile.print("0");
+      dataFile.print(myGNSS.getMinute()); dataFile.print(":");
+      if (myGNSS.getSecond() < 10) dataFile.print("0");
+      dataFile.print(myGNSS.getSecond()); dataFile.print(",");
+
+      // 3. 寫入地理資訊
+      dataFile.print(lat, 7); dataFile.print(",");
+      dataFile.print(lon, 7); dataFile.print(",");
+      dataFile.print(altitude, 2); dataFile.print(",");
+      dataFile.print(speed, 2); dataFile.print(",");
+      dataFile.print(siv); dataFile.print(",");
+      dataFile.println(pdop);
+
+      dataFile.close(); 
+    } else {
+      Serial.println(F("SD 寫入失敗，嘗試重連..."));
+      SD.begin(chipSelect);
+    }
   }
 
-  // 稍微延遲避免洗頻
   delay(200); 
 }
