@@ -50,3 +50,80 @@ void setup() {
     bmp.performReading();
     delay(50);
   }
+// 正式採樣 50 次取平均
+  while (successCount < 50) {
+    if (bmp.performReading()) {
+      pSum += bmp.pressure / 100.0;
+      successCount++;
+      if (successCount % 10 == 0) Serial.print("."); 
+      delay(30); // 稍微拉開間隔，讓採樣更平均
+    }
+  }
+  
+  groundPressure = pSum / 50.0;
+  
+  Serial.printf("\n✅ 校準完成！基準氣壓: %.2f hPa\n", groundPressure);
+  Serial.println("現在開始的高度應該要是 0 左右。");
+}
+
+void loop() {
+  if (millis() - lastLog >= logInterval) {
+    lastLog = millis();
+
+    // 1. 取得相對高度
+    if (bmp.performReading()) {
+      float p = bmp.pressure / 100.0;
+      // 計算相對於 groundPressure 的位移
+      currentAlt = 44330.0 * (1.0 - pow((p / groundPressure), 0.1903));
+    }
+
+    // 2. 測試邏輯狀態機
+    switch (rocketState) {
+      case STANDBY:
+        // 舉高超過 0.5m 視為啟動
+        if (currentAlt > 0.5) {
+          rocketState = ASCENT;
+          Serial.println("🚀 [狀態] 偵測到上升！");
+        }
+        break;
+
+      case ASCENT:
+        if (currentAlt > maxAlt) maxAlt = currentAlt;
+        // 到達 1.5m 模擬 800m 的警戒區
+        if (currentAlt > ARMING_ALT) {
+          rocketState = APOGEE_HUNTING;
+          logInterval = 50; // 切換至高頻 (20Hz)
+          Serial.println("⚠️ [狀態] 已達門檻，進入高頻捕捉...");
+        }
+        break;
+
+      case APOGEE_HUNTING:
+        if (currentAlt > maxAlt) maxAlt = currentAlt;
+        
+        // 核心判斷：是否比最高點下降了 0.5m
+        if ((maxAlt - currentAlt) > DROP_THRESHOLD) {
+          fireParachute();
+        }
+        break;
+
+      case DEPLOYED:
+        logInterval = 1000;
+        break;
+    }
+
+    // 3. Serial Monitor 輸出 (方便你觀察數值)
+    Serial.print("高度: "); Serial.print(currentAlt, 2);
+    Serial.print(" | 最高: "); Serial.print(maxAlt, 2);
+    Serial.print(" | 狀態: "); 
+    if(rocketState == 0) Serial.println("待機");
+    else if(rocketState == 1) Serial.println("上升中");
+    else if(rocketState == 2) Serial.println("高頻追蹤");
+    else Serial.println("已開傘");
+  }
+}
+
+void fireParachute() {
+  digitalWrite(DEPLOY_PIN, HIGH); 
+  rocketState = DEPLOYED;
+  Serial.println("\n******* [！！！觸發開傘！！！] *******\n");
+}
