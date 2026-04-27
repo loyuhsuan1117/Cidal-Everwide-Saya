@@ -7,116 +7,109 @@
 #include <Adafruit_DPS310.h>
 #include <Adafruit_LIS3MDL.h>
 #include <SD.h>
-#include <SparkFun_u-blox_GNSS_Arduino_Library.h> // 請安裝此函式庫
+#include <SparkFun_u-blox_GNSS_Arduino_Library.h> 
 
+// 物件宣告
 Adafruit_DPS310 dps;
 DFRobot_BMI160 bmi160;
-const int8_t i2c_addr = 0x69;
 Adafruit_LIS3MDL lis;
-SFE_UBLOX_GNSS myGNSS; // GPS 物件
+SFE_UBLOX_GNSS myGNSS; 
 File dataFile;
+
+// 位址設定 (SDO 接 GND 版本)
+const int8_t BMI_I2C_ADDR = 0x68; 
+const int8_t DPS_I2C_ADDR = 0x76;
+const int8_t LIS_I2C_ADDR = 0x1C;
 
 void setup() {
   Serial.begin(9600);
-  while (!Serial) {
-    delay(10);
-  }
+  while (!Serial && millis() < 3000); 
 
-  // GPS 初始化 (MAX-M10S)
+  // 強制設定 I2C 速率，增加多感測器通訊穩定度
+  Wire.begin();
+  Wire.setClock(100000); 
+  delay(500);
+
+  Serial.println("--- 超級黑盒子全系統初始化 (SDO to GND 版) ---");
+
+  // 1. GPS 初始化
   if (myGNSS.begin() == false) {
-    Serial.println("找不到 GPS 模組，請檢查接線！");
-    while (1);
+    Serial.println("找不到 GPS 模組 (0x42)");
+  } else {
+    myGNSS.setI2COutput(COM_TYPE_UBX); 
+    myGNSS.setNavigationFrequency(5);
+    Serial.println("GPS 初始化成功！");
   }
-  myGNSS.setI2COutput(COM_TYPE_UBX); 
-  myGNSS.setNavigationFrequency(5);
 
-  Serial.println("DPS310 開始初始化...");
-  if (!dps.begin_I2C(0x77)) {
-    Serial.println("找不到 DPS310，請檢查接線！");
-    while (1) delay(10);
+  // 2. DPS310 初始化
+  if (!dps.begin_I2C(DPS_I2C_ADDR)) {
+    Serial.println("找不到 DPS310 (0x76)");
+  } else {
+    dps.configurePressure(DPS310_64HZ, DPS310_64SAMPLES);
+    dps.configureTemperature(DPS310_64HZ, DPS310_64SAMPLES); 
+    Serial.println("DPS310 初始化成功！");
   }
-  Serial.println("找到 DPS310 感測器！");
-  dps.configurePressure(DPS310_64HZ, DPS310_64SAMPLES);
-  dps.configureTemperature(DPS310_64HZ, DPS310_64SAMPLES); 
 
-  if (bmi160.I2cInit(i2c_addr) != BMI160_OK){
-    Serial.println("init false");
-    while(1);
+  // 3. BMI160 初始化
+  if (bmi160.I2cInit(BMI_I2C_ADDR) != BMI160_OK){
+    Serial.println("BMI160 初始化失敗 (0x68)");
+  } else {
+    bmi160.softReset();
+    delay(100);
+    // 強制進入正常模式並設定範圍
+    bmi160.setAccelConfig(BMI160_ACCEL_RANGE_16G, BMI160_ACCEL_BW_NORMAL_AVG4, BMI160_ACCEL_ODR_100HZ);
+    bmi160.setGyroConfig(BMI160_GYRO_RANGE_2000DPS, BMI160_GYRO_BW_NORMAL_MODE, BMI160_GYRO_ODR_100HZ);
+    Serial.println("BMI160 初始化成功！");
   } 
-  struct bmi160Dev dev;
-  memset(&dev, 0, sizeof(dev)); 
 
-  // 设置加速度计配置
-  dev.accelCfg.power = BMI160_ACCEL_NORMAL_MODE; 
-  dev.accelCfg.range = BMI160_ACCEL_RANGE_16G;     
-  dev.accelCfg.bw = BMI160_ACCEL_BW_NORMAL_AVG4;   
+  // 4. LIS3MDL 初始化
+  if (!lis.begin_I2C(LIS_I2C_ADDR)) {
+    Serial.println("找不到 LIS3MDL (0x1C)");
+  } else {
+    lis.setRange(LIS3MDL_RANGE_4_GAUSS);
+    lis.setDataRate(LIS3MDL_DATARATE_155_HZ);
+    lis.setPerformanceMode(LIS3MDL_HIGHMODE);
+    lis.setOperationMode(LIS3MDL_CONTINUOUSMODE);
+    Serial.println("LIS3MDL 初始化成功！");
+  }
 
-  // 设置陀螺仪配置
-  dev.gyroCfg.power = BMI160_GYRO_NORMAL_MODE;     
-  dev.gyroCfg.range = BMI160_GYRO_RANGE_2000_DPS;  
-  dev.gyroCfg.bw = BMI160_GYRO_BW_NORMAL_MODE;     
-
-  Serial.println("LIS3MDL 磁力計測試 (Teensy 4.1)");
-  if (!lis.begin_I2C(0x1E)) {
-    Serial.println("找不到 LIS3MDL，請檢查接線！");
-    while (1) {
-      delay(10);
+  // 5. SD 卡初始化
+  if (!SD.begin(BUILTIN_SDCARD)) {
+    Serial.println("SD 卡啟動失敗，請檢查插槽");
+  } else {
+    Serial.println("SD 卡就緒");
+    // 建立標頭
+    dataFile = SD.open("data.csv", FILE_WRITE);
+    if (dataFile) {
+      dataFile.println("Time(s),Temp(C),Pressure(hPa),AX(g),AY(g),AZ(g),GX(dps),GY(dps),GZ(dps),MX(uT),MY(uT),MZ(uT),Lat,Lon,Alt,SIV");
+      dataFile.close();
     }
   }
-  Serial.println("已找到 LIS3MDL！");
-  lis.setRange(LIS3MDL_RANGE_4_GAUSS);
-  lis.setDataRate(LIS3MDL_DATARATE_155_HZ);
-  lis.setPerformanceMode(LIS3MDL_HIGHMODE);
-  lis.setOperationMode(LIS3MDL_CONTINUOUSMODE);
-
-  Serial.println("初始化完成！");
-  while (!SD.begin(BUILTIN_SDCARD)) {
-    Serial.println("SD 卡初始化失敗，3 秒後重試...");
-    delay(3000);
-  }
-  Serial.println("SD 卡初始化完成");
-
-  dataFile = SD.open("data.csv", FILE_WRITE);
-  if (dataFile) {
-    // 更新標頭，加入 GPS 欄位
-    dataFile.println("Time(s),Temp(C),Pressure(hPa),AX(g),AY(g),AZ(g),GX(dps),GY(dps),GZ(dps),MX(uT),MY(uT),MZ(uT),Lat,Lon,Alt,SIV");
-    dataFile.close();
-  }
+  Serial.println("--- 系統啟動完畢 ---");
 }
 
 void loop() {
-  sensors_event_t temp_event, pressure_event, event;
+  sensors_event_t temp_event, pressure_event, mag_event;
   float timestamp = millis() / 1000.0;
 
-  // 讀取 DPS310
-  if (dps.getEvents(&temp_event, &pressure_event)) {
-    Serial.print("溫度: ");
-    Serial.print(temp_event.temperature);
-    Serial.print(" °C, ");
-    Serial.print("氣壓: ");
-    Serial.print(pressure_event.pressure);
-    Serial.println(" hPa");
-  }
-  float temp = temp_event.temperature;
-  float pressure = pressure_event.pressure;
-
-  // 讀取 BMI160
+  // --- 讀取數據 ---
+  // DPS310
+  dps.getEvents(&temp_event, &pressure_event);
+  
+  // BMI160
   int16_t accelGyro[6]={0}; 
   bmi160.getAccelGyroData(accelGyro);
   float ax = accelGyro[3] / 16384.0;
   float ay = accelGyro[4] / 16384.0;
   float az = accelGyro[5] / 16384.0;
-  float gx = accelGyro[0] / 16.4;
+  float gx = accelGyro[0] / 16.4; // 2000dps 對應 16.4 LSB/dps
   float gy = accelGyro[1] / 16.4;
   float gz = accelGyro[2] / 16.4;
 
-  // 讀取 LIS3MDL
-  lis.getEvent(&event);
-  float mx = event.magnetic.x;
-  float my = event.magnetic.y;
-  float mz = event.magnetic.z;
+  // LIS3MDL
+  lis.getEvent(&mag_event);
 
-  // 讀取 GPS 數據
+  // MAX-M10S GPS
   float lat = 0, lon = 0, alt = 0;
   byte siv = 0;
   if (myGNSS.getPVT()) {
@@ -126,35 +119,33 @@ void loop() {
     siv = myGNSS.getSIV();
   }
 
-  // 序列埠監控
-  Serial.print("A[g]: "); Serial.print(ax); Serial.print(","); Serial.print(ay); Serial.print(","); Serial.print(az);
-  Serial.print(" | GPS SIV: "); Serial.println(siv);
+  // --- 序列埠輸出 (方便除錯) ---
+  Serial.print("T: "); Serial.print(timestamp, 1);
+  Serial.print(" | P: "); Serial.print(pressure_event.pressure, 1);
+  Serial.print(" | AZ: "); Serial.print(az, 2);
+  Serial.print(" | SIV: "); Serial.println(siv);
 
-  // 寫入 SD 卡
+  // --- 寫入 SD 卡 ---
   dataFile = SD.open("data.csv", FILE_WRITE);
   if (dataFile) {
     dataFile.print(timestamp, 2); dataFile.print(",");
-    dataFile.print(temp, 2); dataFile.print(",");
-    dataFile.print(pressure, 2); dataFile.print(",");
+    dataFile.print(temp_event.temperature, 2); dataFile.print(",");
+    dataFile.print(pressure_event.pressure, 2); dataFile.print(",");
     dataFile.print(ax, 3); dataFile.print(",");
     dataFile.print(ay, 3); dataFile.print(",");
     dataFile.print(az, 3); dataFile.print(",");
     dataFile.print(gx, 2); dataFile.print(",");
     dataFile.print(gy, 2); dataFile.print(",");
     dataFile.print(gz, 2); dataFile.print(",");
-    dataFile.print(mx, 2); dataFile.print(",");
-    dataFile.print(my, 2); dataFile.print(",");
-    dataFile.print(mz, 2); dataFile.print(",");
-    // GPS 欄位
+    dataFile.print(mag_event.magnetic.x, 2); dataFile.print(",");
+    dataFile.print(mag_event.magnetic.y, 2); dataFile.print(",");
+    dataFile.print(mag_event.magnetic.z, 2); dataFile.print(",");
     dataFile.print(lat, 7); dataFile.print(",");
     dataFile.print(lon, 7); dataFile.print(",");
     dataFile.print(alt, 2); dataFile.print(",");
     dataFile.println(siv);
-    
     dataFile.close();
-  } else {
-    Serial.println("⚠️ 無法寫入 SD 卡！");
   }
-  
-  delay(500);
+
+  delay(200); // 5Hz 採樣頻率，適合長時紀錄
 }
