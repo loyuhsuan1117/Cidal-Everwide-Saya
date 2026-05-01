@@ -1,0 +1,55 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_DPS310.h>
+
+Adafruit_DPS310 dps;
+
+void setup() {
+  Serial.begin(115200);
+  
+  unsigned long start = millis();
+  while (!Serial && (millis() - start < 3000)); 
+
+  Serial.println("--- DPS310 數據監測 ---");
+  
+  // 設定引腳 (維持你目前成功的接法)
+  Wire.setSDA(8);
+  Wire.setSCL(9);
+  Wire.begin();
+
+  // 初始化感測器 (0x76)
+  if (!dps.begin_I2C(0x76, &Wire)) {
+    Serial.println("❌ 找不到感測器");
+    while (1) delay(10);
+  }
+
+  // 配置感測器精度
+  dps.configurePressure(DPS310_64HZ, DPS310_64SAMPLES);
+  dps.configureTemperature(DPS310_64HZ, DPS310_64SAMPLES);
+  
+  Serial.println("✅ 連線成功，開始讀取...");
+}
+
+void loop() {
+  static int count = 0;
+  sensors_event_t temp_event, press_event;
+  
+  // getEvents 會同時獲取溫度與氣壓
+  if (dps.getEvents(&temp_event, &press_event)) {
+    Serial.print("["); Serial.print(count++); Serial.print("] ");
+    
+    // 輸出溫度
+    Serial.print("溫度: ");
+    Serial.print(temp_event.temperature, 2);
+    Serial.print(" C | ");
+    
+    // 輸出氣壓
+    Serial.print("氣壓: ");
+    Serial.print(press_event.pressure, 2); 
+    Serial.println(" hPa");
+  } else {
+    Serial.println("⚠️ 讀取失敗");
+  }
+  
+  delay(1000); // 每一秒更新一次
+}
