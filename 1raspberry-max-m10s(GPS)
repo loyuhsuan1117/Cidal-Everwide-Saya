@@ -1,0 +1,48 @@
+#include <TinyGPS++.h>
+
+// 宣告 TinyGPS++ 物件
+TinyGPSPlus gps;
+
+// 使用 Pico 的第二組硬體序列埠 (UART1)
+// 引腳：TX=GPIO 4 (Pin 6), RX=GPIO 5 (Pin 7)
+#define GPSTrack Serial1
+
+void setup() {
+  Serial.begin(115200);
+  
+  // MAX-M10S 預設鮑率通常是 9600 (有些版本是 38400，若沒數據請切換看看)
+  GPSTrack.begin(9600); 
+
+  Serial.println("--- MAX-M10S GPS 測試啟動 ---");
+  Serial.println("注意：室內可能收不到衛星訊號，請靠近窗邊或到戶外。");
+}
+
+void loop() {
+  // 讀取 GPS 模組傳來的原始數據並餵給解析器
+  while (GPSTrack.available() > 0) {
+    gps.encode(GPSTrack.read());
+  }
+
+  // 每 2 秒顯示一次解析結果
+  static unsigned long lastDisplay = 0;
+  if (millis() - lastDisplay > 2000) {
+    lastDisplay = millis();
+
+    Serial.print("衛星數量: ");
+    Serial.println(gps.satellites.value());
+
+    if (gps.location.isValid()) {
+      Serial.print("緯度: "); Serial.println(gps.location.lat(), 6);
+      Serial.print("經度: "); Serial.println(gps.location.lng(), 6);
+      Serial.print("高度: "); Serial.print(gps.altitude.meters()); Serial.println(" 公尺");
+      Serial.print("時間: "); Serial.printf("%02d:%02d:%02d\n", gps.time.hour(), gps.time.minute(), gps.time.second());
+    } else {
+      Serial.println("⚠️ 尚未取得有效定位 (Searching...)");
+      // 顯示診斷資訊：如果 charsProcessed 為 0，代表接線有問題
+      if (gps.charsProcessed() < 10) {
+        Serial.println("   錯誤：完全沒收到 GPS 數據，請檢查 TX/RX 接線。");
+      }
+    }
+    Serial.println("---------------------------");
+  }
+}
