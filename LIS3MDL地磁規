@@ -1,0 +1,45 @@
+#include <Wire.h>
+#include <Adafruit_LIS3MDL.h>
+#include <Adafruit_Sensor.h>
+
+Adafruit_LIS3MDL lis3mdl;
+
+void setup() {
+  Serial.begin(115200);
+  
+  // 等待序列埠，解決你之前遇到的連線問題
+  unsigned long start = millis();
+  while (!Serial && (millis() - start < 3000));
+
+  Serial.println("--- LIS3MDL 磁力計測試 ---");
+
+  // 設定 I2C 引腳
+  Wire.setSDA(8);
+  Wire.setSCL(9);
+  Wire.begin();
+
+  // 初始化 LIS3MDL (預設 I2C 地址通常是 0x1C 或 0x1E)
+  if (!lis3mdl.begin_I2C()) {          
+    Serial.println("❌ 找不到 LIS3MDL 晶片");
+    while (1) delay(10);
+  }
+  
+  Serial.println("✅ LIS3MDL 初始化成功！");
+
+  // 設定量程與效能模式
+  lis3mdl.setPerformanceMode(LIS3MDL_ULTRAHIGHMODE);
+  lis3mdl.setOperationMode(LIS3MDL_CONTINUOUSMODE);
+  lis3mdl.setRange(LIS3MDL_RANGE_4_GAUSS);
+}
+
+void loop() {
+  sensors_event_t event; 
+  lis3mdl.getEvent(&event);
+
+  Serial.print("磁場 X: "); Serial.print(event.magnetic.x);
+  Serial.print(" | Y: "); Serial.print(event.magnetic.y);
+  Serial.print(" | Z: "); Serial.print(event.magnetic.z);
+  Serial.println(" uT");
+
+  delay(500);
+}
