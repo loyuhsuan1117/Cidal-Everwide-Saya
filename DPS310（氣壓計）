@@ -1,42 +1,43 @@
 #include <Wire.h>
-#include <Adafruit_Sensor.h>
 #include <Adafruit_DPS310.h>
 
 Adafruit_DPS310 dps;
 
 void setup() {
-  Serial.begin(9600);
-  while (!Serial) {
-    delay(10);
-  }
+  Serial.begin(115200);
+  while (!Serial) delay(10); // 等待序列埠
 
-  Serial.println("DPS310 開始初始化...");
+  Serial.println(F("--- DPS310 (0x76) 讀取測試 ---"));
+
+  Wire.begin();
+  Wire.setClock(100000); // 使用標準速度以確保穩定
+
+  // 強制使用 0x76 位址初始化
   if (!dps.begin_I2C(0x76)) {
-    Serial.println("找不到 DPS310，請檢查接線！");
-    while (1) delay(10);
+    Serial.println(F("❌ 無法初始化 DPS310！請確認位址是否正確。"));
+    while (1) yield();
   }
 
-  Serial.println("找到 DPS310 感測器！");
+  Serial.println(F("✅ DPS310 成功啟動！"));
 
-  // ★ 建議一定要設（避免 nan）
+  // 設定取樣參數 (64次取樣可提供較高精度與穩定性)
   dps.configurePressure(DPS310_64HZ, DPS310_64SAMPLES);
   dps.configureTemperature(DPS310_64HZ, DPS310_64SAMPLES);
 }
 
 void loop() {
-  sensors_event_t temp_event, pressure_event;
-
-  if (dps.getEvents(&temp_event, &pressure_event)) {
-    Serial.print("溫度: ");
-    Serial.print(temp_event.temperature);
-    Serial.print(" °C, ");
-
-    Serial.print("氣壓: ");
-    Serial.print(pressure_event.pressure);
-    Serial.println(" hPa");
+  sensors_event_t temp_event, press_event;
+  
+  // 取得數據
+  if (dps.getEvents(&temp_event, &press_event)) {
+    Serial.print(F("溫度: "));
+    Serial.print(temp_event.temperature, 2);
+    Serial.print(F(" °C  |  氣壓: "));
+    Serial.print(press_event.pressure, 2);
+    Serial.println(F(" hPa"));
   } else {
-    Serial.println("讀取中...");
+    Serial.println(F("❌ 讀取失敗：感測器未回應"));
   }
 
-  delay(1000);
+  delay(500);
 }
