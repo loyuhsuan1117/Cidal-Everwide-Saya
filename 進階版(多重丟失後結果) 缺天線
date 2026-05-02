@@ -1,1 +1,120 @@
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <SparkFun_u-blox_GNSS_Arduino_Library.h>
+#include "LSM6DS3.h"           
+#include <Adafruit_LIS3MDL.h>
+#include <Adafruit_BMP3XX.h>   
+#include <Adafruit_Sensor.h>
 
+const int chipSelect = BUILTIN_SDCARD;
+#define BMP_SCK  13
+#define BMP_MISO 12
+#define BMP_MOSI 11
+#define BMP_CS   10
+
+SFE_UBLOX_GNSS myGNSS;
+LSM6DS3 myIMU(I2C_MODE, 0x6A); 
+Adafruit_LIS3MDL lis;
+Adafruit_BMP3XX bmp;
+
+bool gpsOK = false, imuOK = false, lisOK = false, bmpOK = false;
+unsigned long lastRetry = 0;
+unsigned long dataCount = 0;
+
+// 輔助函式：檢查 I2C 設備是否在線上
+bool checkI2C(uint8_t addr) {
+  Wire.beginTransmission(addr);
+  return (Wire.endTransmission() == 0);
+}
+
+void tryRecover() {
+  // 1. GPS
+  if (!gpsOK && checkI2C(0x42)) {
+    if (myGNSS.begin()) { gpsOK = true; }
+  }
+  // 2. IMU - 強制重新 init
+  if (!imuOK && checkI2C(0x6A)) {
+    if (myIMU.begin() == 0) imuOK = true;
+  }
+  // 3. MAG - 恢復後必須重新設定模式
+  if (!lisOK && (checkI2C(0x1C) || checkI2C(0x1E))) {
+    if (lis.begin_I2C()) {
+      lis.setPerformanceMode(LIS3MDL_ULTRAHIGHMODE);
+      lis.setDataRate(LIS3MDL_DATARATE_155_HZ);
+      lis.setOperationMode(LIS3MDL_CONTINUOUSMODE); // 關鍵：確保重啟連續讀取
+      lisOK = true;
+    }
+  }
+  // 4. BMP390 (SPI 不受 I2C 影響)
+  if (!bmpOK) {
+    if (bmp.begin_SPI(BMP_CS, BMP_SCK, BMP_MISO, BMP_MOSI)) {
+      bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
+      bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
+      bmpOK = true;
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Wire.begin();
+  Wire.setClock(400000);
+  Wire.setTimeout(3000);
+  tryRecover();
+}
+
+void loop() {
+  if (millis() - lastRetry > 2000) {
+    tryRecover();
+    lastRetry = millis();
+  }
+
+  float accZ = 0, magZ = 0, press = 0;
+  int siv = 0;
+
+  // IMU 讀取與更嚴格的斷線判定
+  if (imuOK) {
+    accZ = myIMU.readFloatAccelZ();
+    // 如果連續讀到 0.00 且不是自由落體，或者讀到 NaN
+    if (isnan(accZ) || (accZ == 0.00 && !checkI2C(0x6A))) { 
+      imuOK = false; accZ = 0; 
+    }
+  }
+
+  // MAG 讀取
+  if (lisOK) {
+    sensors_event_t m_e;
+    if (lis.getEvent(&m_e) && m_e.magnetic.z != 0) {
+      magZ = m_e.magnetic.z;
+    } else { lisOK = false; magZ = 0; }
+  }
+
+  // BMP 讀取與「合理性檢查」
+  if (bmpOK) {
+    if (bmp.performReading()) {
+      press = bmp.pressure / 100.0;
+      // 修正點：如果數值不合理（例如拔掉後的奇異值），強制歸零
+      if (press < 500.0 || press > 1200.0) { 
+        bmpOK = false; press = 0; 
+      }
+    } else { bmpOK = false; press = 0; }
+  }
+
+  if (gpsOK && myGNSS.getPVT()) { siv = myGNSS.getSIV(); }
+
+  dataCount++;
+  // 輸出儀表板
+  Serial.print(F("#")); Serial.print(dataCount);
+  Serial.print(F(" | GPS:")); Serial.print(gpsOK ? "V" : "X");
+  Serial.print(F(" [")); Serial.print(siv); Serial.print(F("]"));
+  Serial.print(F(" | IMU:")); Serial.print(imuOK ? "V" : "X");
+  Serial.print(F(" [")); Serial.print(accZ, 2); Serial.print(F("]"));
+  Serial.print(F(" | MAG:")); Serial.print(lisOK ? "V" : "X");
+  Serial.print(F(" [")); Serial.print(magZ, 1); Serial.print(F("]"));
+  Serial.print(F(" | BAR:")); Serial.print(bmpOK ? "V" : "X");
+  Serial.print(F(" [")); Serial.print(press, 2); Serial.println(F("]"));
+
+  delay(200); 
+}
