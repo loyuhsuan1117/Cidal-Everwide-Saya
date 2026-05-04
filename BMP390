@@ -57,7 +57,7 @@ void setup() {
   }
  
   // 建立檔案並更新標題列（增加 Altitude 欄位）
-  dataFile = SD.open("/bmp390.csv", FILE_WRITE);
+  dataFile = SD.open("/onlybmp.csv", FILE_WRITE);
   if (dataFile) {
     dataFile.println("Time_ms,Temperature_C,Pressure_hPa,Altitude_m");
     dataFile.close();
