@@ -1,0 +1,181 @@
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <SparkFun_u-blox_GNSS_Arduino_Library.h>
+#include "LSM6DS3.h"           
+#include <Adafruit_LIS3MDL.h>
+#include <Adafruit_BMP3XX.h>   
+#include <Adafruit_Sensor.h>
+#include <RadioLib.h> // 請確保已安裝 RadioLib 函式庫
+
+// --- 硬體定義 (原本的) ---
+const int chipSelect = BUILTIN_SDCARD;
+const char* fileName = "FLIGHT_LOG.csv";
+#define BMP_SCK  13
+#define BMP_MISO 12
+#define BMP_MOSI 11
+#define BMP_CS   10
+
+// --- LoRa-02 定義 (使用 Teensy 4.1 SPI1 避開衝突) ---
+#define LORA_CS   0
+#define LORA_DIO0 25
+#define LORA_RST  24
+#define LORA_SCK  27
+#define LORA_MISO 1
+#define LORA_MOSI 26
+
+// 初始化 SPI1 與 LoRa 物件
+SPIClass& spi1 = SPI1; 
+SPISettings loraSettings(2000000, MSBFIRST, SPI_MODE0);
+SX1278 radio = new Module(LORA_CS, LORA_DIO0, LORA_RST, RADIOLIB_NC, spi1, loraSettings);
+
+// --- 物件實例化 ---
+SFE_UBLOX_GNSS myGNSS;
+LSM6DS3 myIMU(I2C_MODE, 0x6A); 
+Adafruit_LIS3MDL lis;
+Adafruit_BMP3XX bmp;
+
+// --- 狀態與定時變數 ---
+bool gpsOK = false, imuOK = false, lisOK = false, bmpOK = false, loraOK = false;
+unsigned long lastRetry = 0;
+unsigned long lastLoopTime = 0;
+unsigned long dataCount = 0;
+const unsigned long targetInterval = 500; // 1秒2筆 (500ms)
+
+float lastMagZ = 0;
+int magStuckCount = 0;
+
+// 檢查 I2C 設備是否在線上
+bool checkI2C(uint8_t addr) {
+  Wire.beginTransmission(addr);
+  return (Wire.endTransmission() == 0);
+}
+
+void tryRecover() {
+  // 1. GPS
+  if (!gpsOK && checkI2C(0x42)) {
+    if (myGNSS.begin()) {
+      myGNSS.setI2COutput(COM_TYPE_UBX);
+      myGNSS.setNavigationFrequency(2); 
+      gpsOK = true;
+    }
+  }
+  // 2. IMU
+  if (!imuOK && checkI2C(0x6A)) {
+    if (myIMU.begin() == 0) imuOK = true;
+  }
+  // 3. MAG
+  if (!lisOK && (checkI2C(0x1C) || checkI2C(0x1E))) {
+    if (lis.begin_I2C()) {
+      lis.reset();
+      delay(50);
+      lis.setPerformanceMode(LIS3MDL_ULTRAHIGHMODE);
+      lis.setOperationMode(LIS3MDL_CONTINUOUSMODE);
+      magStuckCount = 0;
+      lisOK = true;
+    }
+  }
+  // 4. BMP390 (SPI0)
+  if (!bmpOK) {
+    if (bmp.begin_SPI(BMP_CS, BMP_SCK, BMP_MISO, BMP_MOSI)) {
+      bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
+      bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
+      bmpOK = true;
+    }
+  }
+  // 5. LoRa (SPI1)
+  if (!loraOK) {
+    int state = radio.begin(433.0); // 頻率請根據你的模組調整
+    if (state == RADIOLIB_ERR_NONE) loraOK = true;
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  
+  // 啟動 SPI1 供 LoRa 使用
+  SPI1.setMOSI(LORA_MOSI);
+  SPI1.setMISO(LORA_MISO);
+  SPI1.setSCK(LORA_SCK);
+  SPI1.begin();
+
+  Wire.begin();
+  Wire.setClock(400000);
+  Wire.setTimeout(3000);
+
+  if (SD.begin(chipSelect)) {
+    File f = SD.open(fileName, FILE_WRITE);
+    if (f) { f.println("Index,ms,SIV,Lat,Lon,Alt,AccZ,MagZ,Pres,LoRaStat"); f.close(); }
+  }
+  
+  tryRecover();
+  Serial.println(F("\n>>> Super Blackbox + LoRa (SPI1) 啟動 <<<"));
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+
+  if (currentTime - lastLoopTime >= targetInterval) {
+    lastLoopTime = currentTime;
+
+    if (currentTime - lastRetry > 2000) {
+      tryRecover();
+      lastRetry = currentTime;
+    }
+
+    float accZ = 0, magZ = 0, press = 0;
+    double lat = 0, lon = 0, alt = 0;
+    int siv = 0;
+
+    // 1. IMU 讀取
+    if (imuOK) {
+      accZ = myIMU.readFloatAccelZ();
+      if (isnan(accZ) || (accZ == 0.00 && !checkI2C(0x6A))) { imuOK = false; accZ = 0; }
+    }
+
+    // 2. MAG 讀取
+    if (lisOK) {
+      sensors_event_t m_e;
+      if (lis.getEvent(&m_e)) {
+        magZ = m_e.magnetic.z;
+        if (magZ == lastMagZ && magZ != 0) magStuckCount++;
+        else magStuckCount = 0;
+        lastMagZ = magZ;
+        if (magStuckCount > 5) { lisOK = false; magZ = 0; }
+      } else { lisOK = false; magZ = 0; }
+    }
+
+    // 3. BAR 讀取
+    if (bmpOK) {
+      if (bmp.performReading()) {
+        press = bmp.pressure / 100.0;
+        if (press < 500.0 || press > 1200.0) { bmpOK = false; press = 0; }
+      } else { bmpOK = false; press = 0; }
+    }
+
+    // 4. GPS 讀取
+    if (gpsOK && myGNSS.getPVT()) {
+      siv = myGNSS.getSIV();
+      lat = myGNSS.getLatitude()/10000000.0;
+      lon = myGNSS.getLongitude()/10000000.0;
+      alt = myGNSS.getAltitude()/1000.0;
+    }
+
+    dataCount++;
+
+    // --- LoRa 傳送 (僅在 loraOK 且有接天線時執行) ---
+    // 為了安全，這裡預設僅在 Serial 印出狀態，如要實質傳送請取消下方註釋
+    // if (loraOK) { radio.transmit(String(lat, 6) + "," + String(lon, 6)); }
+
+    // SD 卡與 Serial 輸出
+    File df = SD.open(fileName, FILE_WRITE);
+    if (df) {
+      df.printf("%lu,%lu,%d,%.7f,%.7f,%.2f,%.2f,%.2f,%.2f,%d\n",
+                dataCount, currentTime, siv, lat, lon, alt, accZ, magZ, press, loraOK);
+      df.close();
+    }
+    Serial.printf("#%-5lu | GPS:%c[%2d] | IMU:%c[%5.2f] | MAG:%c[%6.1f] | BAR:%c[%7.2f] | LoRa:%c\n", 
+                  dataCount, gpsOK?'V':'X', siv, imuOK?'V':'X', accZ, lisOK?'V':'X', magZ, bmpOK?'V':'X', press, loraOK?'V':'X');
+  }
+}
