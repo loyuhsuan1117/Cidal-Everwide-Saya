@@ -1,0 +1,79 @@
+#include <RadioLib.h>
+#include <SPI.h>
+
+// ===== 根據你的接線定義腳位 =====
+#define LORA_CS    2   // 你的 NSS
+#define LORA_RST   0   // 你的 RST
+#define LORA_DIO0  35  // 你的 DIO0 (Input Only, OK!)
+
+#define LORA_SCK   14  // 你的 SCK
+#define LORA_MISO  12  // 你的 MISO
+#define LORA_MOSI  13  // 你的 MOSI
+
+// 建立 LoRa 物件 (SX1278)
+SX1278 radio = new Module(LORA_CS, LORA_DIO0, LORA_RST);
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial); // 等待序列埠開啟
+
+  Serial.println(F("\n==============================="));
+  Serial.println(F("   Super Blackbox 地面接收站   "));
+  Serial.println(F("==============================="));
+
+  // 1. 初始化 SPI (關鍵：必須指定你的自定義腳位)
+  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
+
+  // 2. 初始化 LoRa 模組
+  Serial.print(F("[LoRa] 正在初始化硬體... "));
+  // 頻率 433.0 MHz，必須與發射端完全相同
+  int state = radio.begin(433.0);
+
+  if (state == RADIOLIB_ERR_NONE) {
+    Serial.println(F("成功！"));
+    
+    // 設定同步字元 (RadioLib 預設為 0x12，確保與發射端一致)
+    // radio.setSyncWord(0x12); 
+  } else {
+    Serial.print(F("失敗，錯誤代碼："));
+    Serial.println(state);
+    if (state == -2) Serial.println(F("提示：找不到晶片，請檢查 NSS(2) 與 SPI 接線。"));
+    while (true); // 卡死在此處以便檢查
+  }
+
+  Serial.println(F("[狀態] 等待數據中...\n"));
+}
+
+void loop() {
+  String str;
+  
+  // 3. 嘗試接收封包 (此為阻塞模式)
+  int state = radio.receive(str);
+
+  if (state == RADIOLIB_ERR_NONE) {
+    // 成功接收
+    Serial.println(F(">>> [收到封包]"));
+    
+    // 印出黑盒子傳來的原始數據 (Index,ms,SIV,Lat,Lon,Alt...)
+    Serial.print(F(" 數據內容: "));
+    Serial.println(str);
+
+    // 4. 印出訊號品質數據，這對於調整天線非常有用
+    Serial.print(F(" 訊號強度 (RSSI): "));
+    Serial.print(radio.getRSSI());
+    Serial.print(F(" dBm | 信噪比 (SNR): "));
+    Serial.print(radio.getSNR());
+    Serial.println(F(" dB"));
+    Serial.println(F("-------------------------------"));
+
+  } else if (state == RADIOLIB_ERR_RX_TIMEOUT) {
+    // 逾時沒收到東西，屬於正常現象，不做處理
+  } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
+    // 收到封包但資料損毀 (可能是距離太遠或干擾)
+    Serial.println(F("[警告] CRC 錯誤：收到損毀的封包"));
+  } else {
+    // 其他錯誤
+    Serial.print(F("[錯誤] 接收異常，代碼："));
+    Serial.println(state);
+  }
+}
