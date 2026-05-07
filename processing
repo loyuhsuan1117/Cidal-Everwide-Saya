@@ -1,0 +1,100 @@
+import processing.serial.*;
+
+Serial myPort;
+float pitch, roll, yaw, temp, press, alt, lat, lng, gpsAlt, gpsSpeed;
+int sats, msaStat, bmpStat, bmmStat, sdStat;
+
+void setup() {
+  size(1000, 650, P3D);
+  // 列出序列埠，若報錯請修改下方 [0]
+  printArray(Serial.list());
+  String portName = Serial.list()[0]; 
+  myPort = new Serial(this, portName, 115200);
+  myPort.bufferUntil('\n');
+}
+
+void draw() {
+  background(210); // 灰底
+  directionalLight(255, 255, 255, 1, 1, -1);
+  ambientLight(150, 150, 150);
+  
+  // --- 繪製文字數據 (左側) ---
+  fill(0);
+  textSize(18);
+  int x = 40, y = 50, s = 28;
+  text("Pitch: " + nf(pitch, 0, 2) + "°", x, y);
+  text("Roll:  " + nf(roll, 0, 2) + "°", x, y+=s);
+  text("Yaw:   " + nf(yaw, 0, 2) + "°", x, y+=s);
+  text("Temp:  " + nf(temp, 0, 2) + "°C", x, y+=s);
+  text("Press: " + nf(press, 0, 2) + " hPa", x, y+=s);
+  text("Alt:   " + nf(alt, 0, 2) + " m", x, y+=s);
+  y += 20;
+  text("GPS Lat: " + nf(lat, 0, 6), x, y+=s);
+  text("GPS Lng: " + nf(lng, 0, 6), x, y+=s);
+  text("GPS Alt: " + nf(gpsAlt, 0, 2) + " m", x, y+=s);
+  text("Sats:    " + sats, x, y+=s);
+  text("Speed:   " + nf(gpsSpeed, 0, 2) + " m/s", x, y+=s);
+
+  // --- 繪製狀態指示 (右側) ---
+  x = 780; y = 50;
+  fill(msaStat==1?color(0,150,0):color(200,0,0)); text("LSM6DS3: " + (msaStat==1?"OK":"FAIL"), x, y);
+  fill(bmpStat==1?color(0,150,0):color(200,0,0)); text("BMP388:  " + (bmpStat==1?"OK":"FAIL"), x, y+=s);
+  fill(bmmStat==1?color(0,150,0):color(200,0,0)); text("LSM9DS1: " + (bmmStat==1?"OK":"FAIL"), x, y+=s);
+  fill(sdStat==1?color(0,150,0):color(200,0,0));  text("SD Card: " + (sdStat==1?"OK":"FAIL"), x, y+=s);
+
+  // --- 繪製 3D 火箭主體 (中間) ---
+  pushMatrix();
+  translate(width/2, height/2 + 50, 0);
+  
+  // 旋轉座標對齊
+  rotateX(radians(-pitch)); 
+  rotateZ(radians(roll));
+  rotateY(radians(yaw));
+  
+  // 畫圓柱體
+  fill(220, 40, 40); // 紅色
+  noStroke();
+  drawCylinder(25, 280, 32); 
+  
+  // 畫簡易側翼
+  fill(180, 0, 0);
+  box(100, 10, 20); 
+  popMatrix();
+}
+
+void drawCylinder(float r, float h, int sides) {
+  float angle = 360 / sides;
+  beginShape(QUAD_STRIP);
+  for (int i = 0; i <= sides; i++) {
+    float x = cos(radians(i * angle)) * r;
+    float z = sin(radians(i * angle)) * r;
+    vertex(x, -h/2, z);
+    vertex(x, h/2, z);
+  }
+  endShape();
+  for (int j = 0; j < 2; j++) {
+    float y = (j == 0) ? -h/2 : h/2;
+    beginShape(POLYGON);
+    for (int i = 0; i <= sides; i++) {
+      float x = cos(radians(i * angle)) * r;
+      float z = sin(radians(i * angle)) * r;
+      vertex(x, y, z);
+    }
+    endShape();
+  }
+}
+
+void serialEvent(Serial p) {
+  String msg = p.readStringUntil('\n');
+  if (msg != null) {
+    msg = trim(msg);
+    if (msg.startsWith("DATA:")) {
+      float[] v = float(split(msg.substring(5), ','));
+      if (v.length >= 15) {
+        pitch=v[0]; roll=v[1]; yaw=v[2]; temp=v[3]; press=v[4]; alt=v[5];
+        lat=v[6]; lng=v[7]; gpsAlt=v[8]; sats=(int)v[9]; gpsSpeed=v[10];
+        msaStat=(int)v[11]; bmpStat=(int)v[12]; bmmStat=(int)v[13]; sdStat=(int)v[14];
+      }
+    }
+  }
+}
