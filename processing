@@ -1,0 +1,99 @@
+import processing.serial.*;
+import processing.opengl.*;
+
+Serial myPort;
+float pitch, roll, yaw, press, alt, lat, lon;
+int siv, gpsStat, imuStat, magStat, bmpStat;
+
+void setup() {
+  size(1000, 700, P3D);
+  // 請修改索引值 [0] 以匹配你的 COM 埠
+  String portName = Serial.list()[0];
+  myPort = new Serial(this, portName, 115200);
+}
+
+void draw() {
+  background(200); // 淺灰色背景
+  lights();
+
+  if (myPort.available() > 0) {
+    String inString = myPort.readStringUntil('\n');
+    if (inString != null && inString.startsWith("$")) {
+      String[] data = split(inString.substring(1).trim(), ',');
+      if (data.length >= 12) {
+        pitch   = float(data[0]);
+        roll    = float(data[1]);
+        yaw     = float(data[2]);
+        press   = float(data[3]);
+        alt     = float(data[4]);
+        lat     = float(data[5]);
+        lon     = float(data[6]);
+        siv     = int(data[7]);
+        gpsStat = int(data[8]);
+        imuStat = int(data[9]);
+        magStat = int(data[10]);
+        bmpStat = int(data[11]);
+      }
+    }
+  }
+
+  drawUI();
+  
+  // --- 繪製 3D 模型 ---
+  pushMatrix();
+  translate(width/2, height/2 + 50, 0);
+  rotateX(radians(pitch));
+  rotateZ(radians(roll));
+  rotateY(radians(yaw));
+  
+  fill(255, 0, 0); // 紅色箭頭/圓柱
+  noStroke();
+  // 繪製主體
+  drawCylinder(20, 150, 32); 
+  // 繪製翼片 (示意圖中的小橫條)
+  box(80, 5, 5); 
+  popMatrix();
+}
+
+void drawUI() {
+  fill(0);
+  textSize(18);
+  textAlign(LEFT);
+  
+  // 左側數值
+  text("Pitch: " + nf(pitch, 0, 2) + "°", 40, 50);
+  text("Roll:  " + nf(roll, 0, 2) + "°", 40, 80);
+  text("Yaw:   " + nf(yaw, 0, 2) + "°", 40, 110);
+  text("Press: " + nf(press, 0, 2) + " hPa", 40, 140);
+  text("Alt:   " + nf(alt, 0, 2) + " m", 40, 170);
+  
+  text("GPS Lat: " + nf(lat, 0, 6), 40, 230);
+  text("GPS Lng: " + nf(lon, 0, 6), 40, 260);
+  text("Sats: " + siv, 40, 290);
+
+  // 右側狀態燈
+  drawStatus("LSM6DS3", imuStat, 800, 50);
+  drawStatus("BMP390",  bmpStat, 800, 80);
+  drawStatus("LIS3MDL", magStat, 800, 110);
+  drawStatus("SD Card", 1, 800, 140); // 假設 SD 固定 OK
+}
+
+void drawStatus(String name, int stat, float x, float y) {
+  if (stat == 1) fill(0, 150, 0); // 綠色
+  else fill(200, 0, 0);           // 紅色
+  textAlign(RIGHT);
+  text(name + ": " + (stat==1?"OK":"FAIL"), x + 150, y);
+}
+
+// 輔助函數：畫圓柱體
+void drawCylinder(float r, float h, int detail) {
+  float angle = 360.0 / detail;
+  beginShape(QUAD_STRIP);
+  for (int i = 0; i <= detail; i++) {
+    float x = cos(radians(i * angle)) * r;
+    float z = sin(radians(i * angle)) * r;
+    vertex(x, -h/2, z);
+    vertex(x, h/2, z);
+  }
+  endShape();
+}
