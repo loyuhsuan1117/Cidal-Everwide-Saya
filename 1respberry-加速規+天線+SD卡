@@ -1,0 +1,72 @@
+#include <Wire.h>
+#include <MS5611.h>
+#include <LIS3DHTR.h>
+#include <SPI.h>
+#include <SdFat.h>
+
+// --- 物件宣告 ---
+MS5611 ms5611(0x77);
+LIS3DHTR<TwoWire> accelerometer;
+SdFat sd;
+SdFile file;
+
+const int chipSelect = 17; // SD 卡 CS 引腳
+#define SEALEVELPRESSURE_HPA (1013.25)
+
+void setup() {
+  Serial.begin(115200);   // USB 除錯
+  Serial1.begin(9600);    // E220 預設通常是 9600 波特率 (連接 GPIO 0, 1)
+
+  Wire.begin();
+  
+  // 1. 初始化 SD 卡
+  if (!sd.begin(chipSelect, SD_SCK_MHZ(10))) {
+    Serial.println("❌ SD 卡初始化失敗！");
+  } else {
+    // 開啟或建立檔案
+    if (file.open("data.csv", O_WRONLY | O_CREAT | O_APPEND)) {
+      file.println("Time,Temp,Pressure,Alt,X,Y,Z"); 
+      file.close();
+    }
+  }
+
+  // 2. 初始化感測器
+  ms5611.begin();
+  accelerometer.begin(Wire, LIS3DHTR_DEFAULT_ADDRESS);
+  accelerometer.setOutputDataRate(LIS3DHTR_DATARATE_50HZ);
+  accelerometer.setFullScaleRange(LIS3DHTR_RANGE_2G);
+
+  Serial.println("✅ 系統啟動完成");
+}
+
+void loop() {
+  static unsigned long lastDisplay = 0;
+  if (millis() - lastDisplay > 2000) {
+    lastDisplay = millis();
+
+    // 讀取數據
+    ms5611.read();
+    float t = ms5611.getTemperature();
+    float p = ms5611.getPressure();
+    float alt = 44330.0 * (1.0 - pow((p / SEALEVELPRESSURE_HPA), 0.1902949));
+    float x = accelerometer.getAccelerationX();
+    float y = accelerometer.getAccelerationY();
+    float z = accelerometer.getAccelerationZ();
+
+    // 準備 CSV 資料字串
+    char dataBuffer[100];
+    sprintf(dataBuffer, "%lu,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f", millis()/1000, t, p, alt, x, y, z);
+
+    // 寫入 SD 卡
+    if (file.open("data.csv", O_WRONLY | O_APPEND)) {
+      file.println(dataBuffer);
+      file.close();
+    }
+
+    // 透過 LoRa 發送
+    Serial1.println(dataBuffer);
+
+    // 螢幕監控顯示
+    Serial.println(dataBuffer);
+  }
+}
