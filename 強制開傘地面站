@@ -1,0 +1,46 @@
+
+#include <SPI.h>
+#include <LoRa.h>
+
+#define BUTTON_PIN 0  // 按鈕接在 GPIO 4 與 GND 之間
+
+unsigned long lastDebounceTime = 0;
+const unsigned long DEBOUNCE_DELAY = 300; // 防彈跳延遲 300 毫秒
+
+void setup() {
+  Serial.begin(115200);
+
+  // 使用內部上拉電阻，按鈕未按下時為 HIGH，按下時為 LOW
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  // 初始化地面站 LoRa 引腳 (請根據你地面站板子的實際腳位配置修改)
+  // 這裡假設與機載端相同，若你的地面站是別款板子，請自行更換 SPI 腳位
+  SPI.begin(12, 13, 11, 10); 
+  LoRa.setPins(10, 9, 46);
+
+  if (!LoRa.begin(925E6)) {
+    Serial.println("❌ 地面站 LoRa 初始化失敗！");
+    while (1);
+  }
+  Serial.println("📡 地面站就緒！按下按鈕即可發射開傘訊號...");
+}
+
+void loop() {
+  // 偵測按鈕是否被按下 (LOW 代表按下)
+  if (digitalRead(BUTTON_PIN) == LOW) {
+
+    // 檢查是否超過防彈跳時間限制
+    if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
+      lastDebounceTime = millis();
+
+      Serial.println("🚨 偵測到按鈕按下！正在發送開傘指令...");
+
+      // 發送乾淨的字串，不帶換行符號
+      LoRa.beginPacket();
+      LoRa.print("FLASH_LIGHT");
+      LoRa.endPacket();
+
+      Serial.println("✅ 指令 [FLASH_LIGHT] 已送出！");
+    }
+  }
+}
