@@ -4,13 +4,12 @@
 #include "SparkFunLSM6DS3.h"
 #include <Adafruit_BMP3XX.h>
 
-// ===== 硬體定義 =====
 #define DEPLOY_PIN 6
 #define LED_PIN 2
+
 LSM6DS3 lsm6(I2C_MODE, 0x6A);
 Adafruit_BMP3XX bmp;
 
-// ===== 飛行邏輯變數 =====
 bool isLaunched = false;
 bool isDeployed = false;
 unsigned long launchTime = 0;
@@ -20,89 +19,121 @@ const unsigned long DEPLOY_DELAY = 18000;
 
 void setup() {
   Serial.begin(115200);
+  delay(1000); // 讓串口穩定
+  
   pinMode(DEPLOY_PIN, OUTPUT);
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(DEPLOY_PIN, LOW);
+  digitalWrite(LED_PIN, LOW);
 
-  Wire.begin(8, 9);
-  SPI.begin(12, 13, 11, 10);
-  LoRa.setPins(10, 9, 46);
-
-  // 1. 強制感測器檢查：若沒接好則停止執行
-  if (lsm6.begin() != 0) {
-    Serial.println("❌ [錯誤] LSM6DS3 加速規未連接或接線錯誤！");
-    while(1) { delay(1000); } // 鎖死程式，避免讀取雜訊
-  }
-  
-  if (!bmp.begin_I2C()) Serial.println("⚠️ [警告] BMP390 氣壓計未連接");
+  // 1. 強制初始化 LoRa (使用標準 SPI)
+  SPI.begin(12, 13, 11, 10); // SCK, MISO, MOSI, SS
+  LoRa.setPins(10, 0, 46);   // NSS, RST, DIO0
   
   if (!LoRa.begin(925E6)) {
-    Serial.println("❌ [錯誤] LoRa 初始化失敗");
-    while(1) { delay(1000); }
+    Serial.println("❌ [硬體錯誤] LoRa 晶片啟動失敗，請檢查 10, 9, 46 腳位！");
+    while(1) { digitalWrite(LED_PIN, HIGH); delay(100); digitalWrite(LED_PIN, LOW); delay(100); }
+  }
+  Serial.println("✅ LoRa 硬體初始化成功！");
+
+  // 2. 初始化 I2C 加速規
+  Wire.begin(8, 9); // SDA, SCL
+  if (lsm6.begin() != 0) {
+    Serial.println("❌ [硬體錯誤] LSM6DS3 加速規未連接或 8, 9 腳位接反！");
+    while(1);
   }
 
-  // 2. 自動校準基準 G 值
-  Serial.println(">>> 偵測到感測器！正在進行 G 值校準...");
+  // 3. 基準 G 值校準
+  Serial.println(">>> 正在校準加速度計...");
   float sum = 0;
   for(int i = 0; i < 20; i++) {
     sum += sqrt(pow(lsm6.readFloatAccelX(), 2) + pow(lsm6.readFloatAccelY(), 2) + pow(lsm6.readFloatAccelZ(), 2));
-    delay(50);
+    delay(30);
   }
   baselineG = sum / 20.0;
   Serial.printf("✅ 校準完成！基準 G 值: %.2f\n", baselineG);
-  Serial.println("系統就緒，等待起飛偵測...");
+  
+  // 開機成功訊號：LED 閃爍三下
+  for(int i=0; i<3; i++) {
+    digitalWrite(LED_PIN, HIGH); delay(100);
+    digitalWrite(LED_PIN, LOW);  delay(100);
+  }
+  Serial.println("🚀 系統就緒！隨時可以接收地面指令或起飛...");
 }
 
 void loop() {
-  if (isDeployed) return;
-
-  // 1. 地面指令接收
+  // --- 【現在修正核心】優先權完全讓給無線電接收 ---
   int packetSize = LoRa.parsePacket();
-  if (packetSize) {
+  if (packetSize > 0) {
     String cmd = "";
-    while (LoRa.available()) cmd += (char)LoRa.read();
-    if (cmd == "FLASH_LIGHT") {
-      Serial.println("📡 [地面指令] 強制開傘！");
+    while (LoRa.available()) {
+      cmd += (char)LoRa.read();
+    }
+    
+    Serial.printf("📡 偵測到無線訊號！內容: [%s]\n", cmd.c_str());
+
+    // 使用極致寬鬆的 indexOf 模糊比對
+    if (cmd.indexOf("FLASH_LIGHT") >= 0) {
+      Serial.println("🎯 [地面指令符合] 執行強制開傘程序！");
       fireParachute();
+      return; // 直接跳出，不執行後續動作
     }
   }
 
-  // 2. 加速規：偵測起飛 (排除雜訊)
-  float totalG = sqrt(pow(lsm6.readFloatAccelX(), 2) + pow(lsm6.readFloatAccelY(), 2) + pow(lsm6.readFloatAccelZ(), 2));
-  
-  // 檢查是否超過門檻 (加入極簡單防抖動，數值必須大於 0.5 才算數)
-  if (!isLaunched && (totalG - baselineG) > G_THRESHOLD) {
-    isLaunched = true;
-    launchTime = millis();
-    Serial.println("🚀 [起飛偵測] 成功！開始 18 秒倒數...");
+  // 如果已經開傘，卡死在這裡，保護現場
+  if (isDeployed) {
+    digitalWrite(LED_PIN, HIGH); // 保持燈亮
+    return;
   }
 
-  // 3. 起飛後倒數計時
+  // --- 【現在修正核心 2】大幅拉開加速規的讀取間隔，留出空檔給 LoRa 晶片處理中斷 ---
+  static unsigned long lastAccelTime = 0;
+  if (millis() - lastAccelTime > 100) { // 每 100ms (一秒 10 次) 才讀取一次加速規，極大釋放資源
+    lastAccelTime = millis();
+
+    float ax = lsm6.readFloatAccelX();
+    float ay = lsm6.readFloatAccelY();
+    float az = lsm6.readFloatAccelZ();
+    float totalG = sqrt(pow(ax, 2) + pow(ay, 2) + pow(az, 2));
+
+    // 起飛偵測邏輯
+    if (!isLaunched && (totalG - baselineG) > G_THRESHOLD) {
+      isLaunched = true;
+      launchTime = millis();
+      Serial.printf("🚀 [起飛偵測] 成功！瞬間 G 值 %.2f，18秒倒數開始...\n", totalG);
+    }
+  }
+
+  // 倒數計時邏輯
   if (isLaunched) {
     unsigned long elapsedTime = millis() - launchTime;
-    
     static unsigned long lastSecond = 0;
+    
     if (elapsedTime / 1000 != lastSecond) {
       lastSecond = elapsedTime / 1000;
-      Serial.printf("T + %lu 秒\n", lastSecond);
+      Serial.printf("⏱️ T + %lu 秒\n", lastSecond);
     }
-
+    
     if (elapsedTime >= DEPLOY_DELAY) {
-      Serial.println("⏰ [時間到] 自動開傘！");
+      Serial.println("⏰ [時間到] 自動計時開傘！");
       fireParachute();
     }
   }
+
+  delay(1); // 觸發 ESP32 內部看門狗與底層無線電任務調度
 }
 
 void fireParachute() {
   if (isDeployed) return;
   isDeployed = true;
   
+  Serial.println("🔥 [執行] 開傘！GPIO 6 導通，GPIO 2 燈亮！");
   digitalWrite(DEPLOY_PIN, HIGH);
-  digitalWrite(LED_PIN, HIGH);
-  Serial.println("🔥 [執行] 開傘程序啟動！");
-  delay(5000); 
+  digitalWrite(LED_PIN, HIGH);     // 讓 GPIO 2 實體燈亮起
+  
+  delay(5000); // 保持 5 秒
+  
   digitalWrite(DEPLOY_PIN, LOW);
   digitalWrite(LED_PIN, LOW);
-  Serial.println("✅ 開傘程序完成。");
+  Serial.println("✅ 開傘程序結束。");
 }
