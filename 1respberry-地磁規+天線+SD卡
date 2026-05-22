@@ -1,0 +1,82 @@
+#include <Wire.h>
+#include <Adafruit_LIS3MDL.h>
+#include <Adafruit_Sensor.h>
+#include <SPI.h>
+#include <SdFat.h>
+
+// --- 物件宣告 ---
+Adafruit_LIS3MDL lis3mdl;
+SdFat sd;
+SdFile file;
+
+const int chipSelect = 17; // SD 卡 CS 引腳
+
+void setup() {
+  Serial.begin(115200);
+  Serial1.begin(9600);    // LoRa 模組 (GPIO 0, 1)
+
+  // 等待序列埠啟動
+  unsigned long start = millis();
+  while (!Serial && (millis() - start < 3000));
+
+  Serial.println("--- 磁力計 + LoRa + SD 卡系統啟動 ---");
+
+  // 1. 初始化 SD 卡
+  if (!sd.begin(chipSelect, SD_SCK_MHZ(10))) {
+    Serial.println("❌ SD 卡初始化失敗");
+  } else {
+    if (file.open("mag_data.csv", O_WRONLY | O_CREAT | O_APPEND)) {
+      file.println("Time(s),X,Y,Z");
+      file.close();
+    }
+  }
+
+  // 2. 初始化 LIS3MDL 磁力計
+  Wire.setSDA(8);
+  Wire.setSCL(9);
+  Wire.begin();
+
+  if (!lis3mdl.begin_I2C()) {
+    Serial.println("❌ 找不到 LIS3MDL 晶片");
+    while (1) delay(10);
+  }
+  
+  lis3mdl.setPerformanceMode(LIS3MDL_ULTRAHIGHMODE);
+  lis3mdl.setOperationMode(LIS3MDL_CONTINUOUSMODE);
+  lis3mdl.setRange(LIS3MDL_RANGE_4_GAUSS);
+
+  Serial.println("✅ 所有模組初始化成功！");
+}
+
+void loop() {
+  static unsigned long lastDisplay = 0;
+  
+  if (millis() - lastDisplay > 2000) {
+    lastDisplay = millis();
+
+    // 讀取磁力計數據
+    sensors_event_t event;
+    lis3mdl.getEvent(&event);
+
+    float x = event.magnetic.x;
+    float y = event.magnetic.y;
+    float z = event.magnetic.z;
+
+    // 格式化資料字串
+    char dataBuffer[64];
+    sprintf(dataBuffer, "%lu,%.2f,%.2f,%.2f", millis()/1000, x, y, z);
+
+    // 寫入 SD 卡
+    if (file.open("mag_data.csv", O_WRONLY | O_APPEND)) {
+      file.println(dataBuffer);
+      file.close();
+    }
+
+    // 透過 LoRa 發送
+    Serial1.println(dataBuffer);
+
+    // 串口監控輸出
+    Serial.print("傳送數據: ");
+    Serial.println(dataBuffer);
+  }
+}
