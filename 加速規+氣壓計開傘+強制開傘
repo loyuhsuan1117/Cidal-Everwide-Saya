@@ -2,17 +2,21 @@
 #include <SPI.h>
 #include <LoRa.h>
 #include "SparkFunLSM6DS3.h"
+#include <Adafruit_BMP3XX.h>
 
 // ===== 硬體定義 =====
 #define DEPLOY_PIN 6
 #define LED_PIN 2
 LSM6DS3 lsm6(I2C_MODE, 0x6A);
+Adafruit_BMP3XX bmp;
 
 // ===== 飛行邏輯變數 =====
-bool isLaunched = false;        // 是否已經起飛
-bool isDeployed = false;       // 是否已經開傘
-unsigned long launchTime = 0;  // 起飛時間點
-const unsigned long DEPLOY_DELAY = 18000; // 18 秒 (單位：毫秒)
+bool isLaunched = false;
+bool isDeployed = false;
+unsigned long launchTime = 0;
+float baselineG = 1.0;             // 自動校準後的基準值
+const float G_THRESHOLD = 0.5;     // 只要比基準多出 0.5G 即判定起飛
+const unsigned long DEPLOY_DELAY = 18000; // 18 秒
 
 void setup() {
   Serial.begin(115200);
@@ -20,76 +24,77 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(DEPLOY_PIN, LOW);
 
-  // 初始化 I2C 與 SPI
   Wire.begin(8, 9);
   SPI.begin(12, 13, 11, 10);
   LoRa.setPins(10, 9, 46);
 
-  if (lsm6.begin() != 0) Serial.println("LSM6DS3 啟動失敗");
+  if (lsm6.begin() != 0) Serial.println("❌ LSM6DS3 啟動失敗");
   if (!LoRa.begin(925E6)) {
-    Serial.println("LoRa 啟動失敗");
+    Serial.println("❌ LoRa 啟動失敗");
     while(1);
   }
 
-  Serial.println("✅ 系統已就緒，等待起飛偵測 (G > 1.2)...");
+  // --- 自動校準基準 G 值 ---
+  Serial.println(">>> 正在進行 G 值校準，請保持靜止...");
+  float sum = 0;
+  for(int i = 0; i < 20; i++) {
+    sum += sqrt(pow(lsm6.readFloatAccelX(), 2) + pow(lsm6.readFloatAccelY(), 2) + pow(lsm6.readFloatAccelZ(), 2));
+    delay(50);
+  }
+  baselineG = sum / 20.0;
+  Serial.printf("✅ 校準完成！基準 G 值: %.2f\n", baselineG);
+  Serial.println("等待起飛偵測...");
 }
 
 void loop() {
-  if (isDeployed) return; // 已經開傘，停止執行後續邏輯
+  if (isDeployed) return;
 
-  // 1. 地面指令接收 (維持 FLASH_LIGHT 強制開傘)
+  // 1. 地面指令接收
   int packetSize = LoRa.parsePacket();
   if (packetSize) {
     String cmd = "";
     while (LoRa.available()) cmd += (char)LoRa.read();
     if (cmd == "FLASH_LIGHT") {
-      Serial.println("📡 [地面指令] 強制執行開傘！");
+      Serial.println("📡 [地面指令] 強制開傘！");
       fireParachute();
     }
   }
 
-  // 2. 加速規：偵測起飛
-  float ax = lsm6.readFloatAccelX();
-  float ay = lsm6.readFloatAccelY();
-  float az = lsm6.readFloatAccelZ();
-  float totalG = sqrt(ax*ax + ay*ay + az*az);
-
-  // 測試用：若沒起飛且 G 力超過 1.2 則觸發起飛
-  if (!isLaunched && totalG > 1.2) { 
+  // 2. 加速規：偵測起飛 (使用相對偏移量)
+  float totalG = sqrt(pow(lsm6.readFloatAccelX(), 2) + pow(lsm6.readFloatAccelY(), 2) + pow(lsm6.readFloatAccelZ(), 2));
+  
+  if (!isLaunched && (totalG - baselineG) > G_THRESHOLD) {
     isLaunched = true;
     launchTime = millis();
-    Serial.println("🚀 [起飛偵測] 偵測到推力，開始 18 秒倒數...");
+    Serial.println("🚀 [起飛偵測] 成功！開始 18 秒倒數...");
   }
 
-  // 3. 起飛後：處理倒數 18 秒
+  // 3. 起飛後倒數計時
   if (isLaunched) {
     unsigned long elapsedTime = millis() - launchTime;
     
-    // 每秒顯示剩餘時間 (方便除錯)
+    // 輸出倒數狀態
     static unsigned long lastSecond = 0;
     if (elapsedTime / 1000 != lastSecond) {
       lastSecond = elapsedTime / 1000;
       Serial.printf("T + %lu 秒\n", lastSecond);
     }
 
-    // 時間到達 18 秒
     if (elapsedTime >= DEPLOY_DELAY) {
-      Serial.println("⏰ [時間到] 執行自動開傘！");
+      Serial.println("⏰ [時間到] 自動開傘！");
       fireParachute();
     }
   }
 }
 
 void fireParachute() {
-  if (isDeployed) return; // 防止重複觸發
+  if (isDeployed) return;
   isDeployed = true;
   
   digitalWrite(DEPLOY_PIN, HIGH);
   digitalWrite(LED_PIN, HIGH);
   Serial.println("🔥 [執行] 開傘程序啟動！");
-  
-  delay(5000); // 動作持續 5 秒 (點火器/馬達)
-  
+  delay(5000); 
   digitalWrite(DEPLOY_PIN, LOW);
   digitalWrite(LED_PIN, LOW);
   Serial.println("✅ 開傘程序完成。");
