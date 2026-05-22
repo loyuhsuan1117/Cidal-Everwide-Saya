@@ -1,0 +1,66 @@
+#include <Wire.h>
+#include <MS5611.h>
+#include <SPI.h>
+#include <SdFat.h>
+
+// --- 初始化物件 ---
+MS5611 ms5611(0x77);
+SdFat sd;
+SdFile file;
+
+const int chipSelect = 17; // SD 卡 CS 引腳
+#define SEALEVELPRESSURE_HPA (1013.25)
+
+void setup() {
+  Serial.begin(115200);   // USB 除錯
+  Serial1.begin(9600);    // LoRa 模組 (E220-900T22D 預設 9600)
+
+  // 1. 初始化 SD 卡
+  if (!sd.begin(chipSelect, SD_SCK_MHZ(10))) {
+    Serial.println("❌ SD 卡初始化失敗！");
+  } else {
+    Serial.println("✅ SD 卡就緒");
+    if (file.open("data.csv", O_WRONLY | O_CREAT | O_APPEND)) {
+      file.println("Time,Temp,Pressure,Alt"); // CSV 標題
+      file.close();
+    }
+  }
+
+  // 2. 初始化氣壓計
+  Wire.begin();
+  if (!ms5611.begin()) {
+    Serial.println("❌ 錯誤：找不到 MS5611！");
+    while (1) delay(10);
+  }
+  
+  Serial.println("✅ 系統啟動完成");
+}
+
+void loop() {
+  static unsigned long lastDisplay = 0;
+  if (millis() - lastDisplay > 2000) {
+    lastDisplay = millis();
+
+    // 讀取數據
+    ms5611.read();
+    float t = ms5611.getTemperature();
+    float p = ms5611.getPressure();
+    float alt = 44330.0 * (1.0 - pow((p / SEALEVELPRESSURE_HPA), 0.1902949));
+
+    // 格式化資料
+    char dataBuffer[64];
+    sprintf(dataBuffer, "%lu,%.1f,%.1f,%.1f", millis()/1000, t, p, alt);
+
+    // 寫入 SD 卡
+    if (file.open("data.csv", O_WRONLY | O_APPEND)) {
+      file.println(dataBuffer);
+      file.close();
+    }
+
+    // 透過 LoRa 發送 (Serial1 對應 GPIO 0, 1)
+    Serial1.println(dataBuffer);
+
+    // 串口監控
+    Serial.println(dataBuffer);
+  }
+}
