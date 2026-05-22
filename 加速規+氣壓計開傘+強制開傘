@@ -14,9 +14,9 @@ Adafruit_BMP3XX bmp;
 bool isLaunched = false;
 bool isDeployed = false;
 unsigned long launchTime = 0;
-float baselineG = 1.0;             // 自動校準後的基準值
-const float G_THRESHOLD = 0.5;     // 只要比基準多出 0.5G 即判定起飛
-const unsigned long DEPLOY_DELAY = 18000; // 18 秒
+float baselineG = 1.0;             
+const float G_THRESHOLD = 0.5;     
+const unsigned long DEPLOY_DELAY = 18000; 
 
 void setup() {
   Serial.begin(115200);
@@ -28,14 +28,21 @@ void setup() {
   SPI.begin(12, 13, 11, 10);
   LoRa.setPins(10, 9, 46);
 
-  if (lsm6.begin() != 0) Serial.println("❌ LSM6DS3 啟動失敗");
+  // 1. 強制感測器檢查：若沒接好則停止執行
+  if (lsm6.begin() != 0) {
+    Serial.println("❌ [錯誤] LSM6DS3 加速規未連接或接線錯誤！");
+    while(1) { delay(1000); } // 鎖死程式，避免讀取雜訊
+  }
+  
+  if (!bmp.begin_I2C()) Serial.println("⚠️ [警告] BMP390 氣壓計未連接");
+  
   if (!LoRa.begin(925E6)) {
-    Serial.println("❌ LoRa 啟動失敗");
-    while(1);
+    Serial.println("❌ [錯誤] LoRa 初始化失敗");
+    while(1) { delay(1000); }
   }
 
-  // --- 自動校準基準 G 值 ---
-  Serial.println(">>> 正在進行 G 值校準，請保持靜止...");
+  // 2. 自動校準基準 G 值
+  Serial.println(">>> 偵測到感測器！正在進行 G 值校準...");
   float sum = 0;
   for(int i = 0; i < 20; i++) {
     sum += sqrt(pow(lsm6.readFloatAccelX(), 2) + pow(lsm6.readFloatAccelY(), 2) + pow(lsm6.readFloatAccelZ(), 2));
@@ -43,7 +50,7 @@ void setup() {
   }
   baselineG = sum / 20.0;
   Serial.printf("✅ 校準完成！基準 G 值: %.2f\n", baselineG);
-  Serial.println("等待起飛偵測...");
+  Serial.println("系統就緒，等待起飛偵測...");
 }
 
 void loop() {
@@ -60,9 +67,10 @@ void loop() {
     }
   }
 
-  // 2. 加速規：偵測起飛 (使用相對偏移量)
+  // 2. 加速規：偵測起飛 (排除雜訊)
   float totalG = sqrt(pow(lsm6.readFloatAccelX(), 2) + pow(lsm6.readFloatAccelY(), 2) + pow(lsm6.readFloatAccelZ(), 2));
   
+  // 檢查是否超過門檻 (加入極簡單防抖動，數值必須大於 0.5 才算數)
   if (!isLaunched && (totalG - baselineG) > G_THRESHOLD) {
     isLaunched = true;
     launchTime = millis();
@@ -73,7 +81,6 @@ void loop() {
   if (isLaunched) {
     unsigned long elapsedTime = millis() - launchTime;
     
-    // 輸出倒數狀態
     static unsigned long lastSecond = 0;
     if (elapsedTime / 1000 != lastSecond) {
       lastSecond = elapsedTime / 1000;
