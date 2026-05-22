@@ -4,7 +4,7 @@
 TinyGPSPlus gps;
 
 // 使用 Pico 的第二組硬體序列埠 (UART1)
-// 引腳：TX=GPIO 4 (Pin 6), RX=GPIO 5 (Pin 7)
+// 引腳：TX=GPIO 1 (Pin 2), RX=GPIO 0 (Pin 1)
 #define GPSTrack Serial1
 
 void setup() {
