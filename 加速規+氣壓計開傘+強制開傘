@@ -6,15 +6,15 @@
 
 // ===== 硬體定義 =====
 #define DEPLOY_PIN 6
-#define LED_PIN 2 // 視覺確認用
+#define LED_PIN 2
 LSM6DS3 lsm6(I2C_MODE, 0x6A);
 Adafruit_BMP3XX bmp;
 
 // ===== 狀態變數 =====
-bool isArmed = false; 
+bool isLaunched = false;
 bool isDeployed = false;
-float groundPressure = 0;
-float maxAlt = 0;
+unsigned long launchTime = 0;
+const unsigned long DEPLOY_DELAY = 18000; // 18秒倒數
 
 void setup() {
   Serial.begin(115200);
@@ -22,73 +22,68 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(DEPLOY_PIN, LOW);
 
-  // 初始化 I2C (Wire) 與 SPI (LoRa)
   Wire.begin(8, 9);
   SPI.begin(12, 13, 11, 10);
   LoRa.setPins(10, 9, 46);
 
-  // 初始化各個模組
-  if (lsm6.begin() != 0) Serial.println("LSM6DS3 啟動失敗");
-  if (!bmp.begin_I2C()) Serial.println("BMP390 啟動失敗");
-  if (!LoRa.begin(925E6)) {
-    Serial.println("LoRa 啟動失敗");
-    while(1);
-  }
+  if (lsm6.begin() != 0) Serial.println("LSM6DS3 Error");
+  if (!bmp.begin_I2C()) Serial.println("BMP390 Error");
+  if (!LoRa.begin(925E6)) Serial.println("LoRa Error");
 
-  // 簡易氣壓校準
-  delay(1000);
-  if (bmp.performReading()) {
-    groundPressure = bmp.pressure / 100.0;
-  }
-  Serial.println("✅ 系統啟動，進入待機模式，監聽 FLASH_LIGHT 指令...");
+  Serial.println("✅ 系統啟動，等待起飛偵測...");
 }
 
 void loop() {
-  if (isDeployed) return; // 已開傘則不再執行任何動作
+  if (isDeployed) return;
 
-  // 1. 地面指令接收 (維持使用 FLASH_LIGHT)
+  // 1. 地面指令接收 (維持 FLASH_LIGHT 強制開傘)
   int packetSize = LoRa.parsePacket();
   if (packetSize) {
     String cmd = "";
     while (LoRa.available()) cmd += (char)LoRa.read();
-    
     if (cmd == "FLASH_LIGHT") {
-      Serial.println("📡 [指令] 收到地面強制開傘指令！");
+      Serial.println("📡 [指令] 地面強制開傘！");
       fireParachute();
     }
   }
 
-  // 2. 加速規邏輯 (G力判定起飛)
+  // 2. 加速規：偵測起飛 (測試時門檻設低一點，實飛設回 3.0)
   float ax = lsm6.readFloatAccelX();
   float ay = lsm6.readFloatAccelY();
   float az = lsm6.readFloatAccelZ();
   float totalG = sqrt(ax*ax + ay*ay + az*az);
-  if (totalG > 3.0) isArmed = true; // 超過 3G 視為火箭已發射
 
-  // 3. 氣壓計邏輯 (頂點偵測)
-  if (bmp.performReading()) {
-    float alt = 44330.0 * (1.0 - pow((bmp.pressure / 100.0 / groundPressure), 0.1903));
-    if (alt > maxAlt) maxAlt = alt;
+  if (!isLaunched && totalG > 1.2) { // 測試用門檻 1.2
+    isLaunched = true;
+    launchTime = millis();
+    Serial.println("🚀 [起飛] 偵測到起飛，啟動 18 秒倒數...");
+  }
+
+  // 3. 處理起飛後的計時開傘
+  if (isLaunched) {
+    unsigned long elapsedTime = millis() - launchTime;
     
-    // 當處於飛行狀態且偵測到頂點後下降 0.5m
-    if (isArmed && (maxAlt - alt) > 0.5) {
-      Serial.println("📉 [氣壓] 偵測到頂點下降！");
+    // 顯示倒數資訊
+    static unsigned long lastPrint = 0;
+    if (elapsedTime / 1000 != lastPrint) {
+      lastPrint = elapsedTime / 1000;
+      Serial.printf("T + %lu 秒\n", lastPrint);
+    }
+
+    if (elapsedTime >= DEPLOY_DELAY) {
+      Serial.println("⏰ [時間到] 執行開傘！");
       fireParachute();
     }
   }
 }
 
 void fireParachute() {
-  if (isDeployed) return; // 防重覆觸發
+  if (isDeployed) return;
   isDeployed = true;
-  
   digitalWrite(DEPLOY_PIN, HIGH);
   digitalWrite(LED_PIN, HIGH);
-  Serial.println("🔥 [執行] 開傘程序啟動！");
-  
-  delay(5000); // 動作持續 5 秒 (例如點火或推動馬達)
-  
+  Serial.println("🔥 [執行] 開傘程序！");
+  delay(5000); 
   digitalWrite(DEPLOY_PIN, LOW);
   digitalWrite(LED_PIN, LOW);
-  Serial.println("✅ 開傘程序完成。");
 }
