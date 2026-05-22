@@ -1,0 +1,71 @@
+#include <Wire.h>
+#include <MS5611.h> // 1. 替換成 Rob Tillaart 的正確函式庫
+
+// 2. 宣告 MS5611 物件，並直接指定 I2C 位址 0x77
+// GY-63 模組的 I2C 位址通常預設為 0x77 (若 CSB 腳接地則為 0x76)
+MS5611 ms5611(0x77);
+
+// 海平面標準氣壓 (單位: hPa)，用於計算絕對高度
+// 預設為 1013.25，你可以根據當天當地氣象局報告微調以獲得更精準的高度數據
+#define SEALEVELPRESSURE_HPA (1013.25)
+
+void setup() {
+  Serial.begin(115200);
+  
+  // 等待序列埠通訊建立 (主要用於具有原生 USB 的 Pico，避免漏掉開頭訊息)
+  while (!Serial && millis() < 3000);
+
+  Serial.println("--- GY-63 (MS5611) 氣壓計測試啟動 ---");
+
+  // 初始化 Pico 的預設 I2C 界面
+  // 預設引腳為：SDA = GPIO 4, SCL = GPIO 5
+  Wire.begin();
+
+  // 3. 初始化 MS5611 感測器 (Rob Tillaart 庫的初始化寫法)
+  if (!ms5611.begin()) {
+    Serial.println("❌ 錯誤：找不到 GY-63 (MS5611) 感測器，請檢查接線！");
+    while (1) delay(10); // 卡死程式以防後續錯誤讀取
+  }
+
+  Serial.println("✅ GY-63 感測器連線成功！開始讀取數據...");
+  Serial.println("------------------------------------");
+}
+
+void loop() {
+  // 宣告靜態變數以記錄上一次顯示的時間
+  static unsigned long lastDisplay = 0;
+
+  // 每 2 秒顯示一次解析結果 (非阻塞定時器)
+  if (millis() - lastDisplay > 2000) {
+    lastDisplay = millis();
+
+    // 4. 讀取感測器原始數據 (此處執行實際的 I2C 數據讀取與轉換)
+    ms5611.read();
+
+    // 5. 讀取溫度與氣壓
+    // 在 Rob Tillaart 的庫中，getPressure() 回傳的單位就是 mBar / hPa，完全相容
+    float temperature = ms5611.getTemperature(); // 攝氏度
+    float pressure = ms5611.getPressure();       // 百帕 (hPa)
+
+    // 計算相對海平面高度 (利用氣壓公式計算)
+    // 公式：44330 * (1.0 - pow(pressure / seaLevelPressure, 0.1903))
+    float altitude = 44330.0 * (1.0 - pow((pressure / SEALEVELPRESSURE_HPA), 0.1902949));
+
+    // --- 數據輸出至序列埠監控器 ---
+    Serial.print("系統時間: "); Serial.print(millis() / 1000); Serial.println(" 秒");
+    
+    Serial.print("環境溫度: "); 
+    Serial.print(temperature, 2); 
+    Serial.println(" *C");
+
+    Serial.print("當前氣壓: "); 
+    Serial.print(pressure, 2); 
+    Serial.println(" hPa");
+
+    Serial.print("估算高度: "); 
+    Serial.print(altitude, 2); 
+    Serial.println(" 公尺 (相對於海平面)");
+
+    Serial.println("---------------------------");
+  }
+}
