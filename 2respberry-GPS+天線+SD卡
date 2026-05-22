@@ -1,0 +1,69 @@
+#include <TinyGPS++.h>
+#include <SPI.h>
+#include <SdFat.h>
+
+// 宣告物件
+TinyGPSPlus gps;
+SdFat sd;
+SdFile file;
+
+const int chipSelect = 17;
+
+// UART 定義
+// GPS 接在 Serial1 (GPIO 4, 5)
+// LoRa 接在 Serial2 (GPIO 0, 1) -> Pico 上使用硬體 UART 需額外設定
+#define GPSSerial Serial1
+#define LoRaSerial Serial2 
+
+void setup() {
+  Serial.begin(115200);   // USB 除錯
+  GPSSerial.begin(9600);  // GPS (GPIO 4, 5)
+  LoRaSerial.begin(9600, SERIAL_8N1, 1, 0); // LoRa (GPIO 0, 1)
+
+  // 1. 初始化 SD 卡
+  if (!sd.begin(chipSelect, SD_SCK_MHZ(10))) {
+    Serial.println("❌ SD 卡初始化失敗");
+  } else {
+    if (file.open("gps_log.csv", O_WRONLY | O_CREAT | O_APPEND)) {
+      file.println("Time,Lat,Lng,Alt,Sats");
+      file.close();
+    }
+  }
+
+  Serial.println("--- GPS + LoRa + SD 系統啟動 ---");
+}
+
+void loop() {
+  // 將 GPS 數據餵給解析器
+  while (GPSSerial.available() > 0) {
+    gps.encode(GPSSerial.read());
+  }
+
+  static unsigned long lastDisplay = 0;
+  if (millis() - lastDisplay > 2000) {
+    lastDisplay = millis();
+
+    if (gps.location.isValid()) {
+      // 格式化數據
+      char dataBuffer[100];
+      sprintf(dataBuffer, "%02d:%02d:%02d,%.6f,%.6f,%.1f,%d", 
+              gps.time.hour(), gps.time.minute(), gps.time.second(),
+              gps.location.lat(), gps.location.lng(), 
+              gps.altitude.meters(), gps.satellites.value());
+
+      // 寫入 SD 卡
+      if (file.open("gps_log.csv", O_WRONLY | O_APPEND)) {
+        file.println(dataBuffer);
+        file.close();
+      }
+
+      // 透過 LoRa 發送
+      LoRaSerial.println(dataBuffer);
+
+      // 監控視窗
+      Serial.println(dataBuffer);
+    } else {
+      Serial.println("⚠️ 搜尋衛星中...");
+    }
+  }
+}
