@@ -1,70 +1,45 @@
-#include <Wire.h>
-#include <MS5611.h>
-#include <LIS3DHTR.h> // 導入 Grove 加速度計函式庫
+/**
+ * 類比加速度計完整測試程式
+ * 接線：X->GP26, Y->GP27, Z->GP28, VCC->3.3V, GND->GND
+ */
 
-// 宣告感測器物件
-MS5611 ms5611(0x77);
-LIS3DHTR<TwoWire> accelerometer; // 宣告 LIS3DHTR 物件
-
-#define SEALEVELPRESSURE_HPA (1013.25)
+// --- 設定區 ---
+// 這裡假設感測器在 0g 時輸出電壓為 1.65V (這是大多數類比加速度計的標準值)
+const float ZERO_G_VOLTAGE = 1.65; 
+// 靈敏度 (單位: V/g)。如果你的感測器靈敏度是 300mV/g，則填 0.3
+const float SENSITIVITY = 0.300; 
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial && millis() < 3000);
-
-  Serial.println("--- 雙感測器測試啟動 (MS5611 + LIS3DHTR) ---");
-
-  // 初始化 Pico 的預設 I2C 界面 (SDA=GPIO 4, SCL=GPIO 5)
-  Wire.begin();
-
-  // 1. 初始化 MS5611 氣壓計
-  if (!ms5611.begin()) {
-    Serial.println("❌ 錯誤：找不到 MS5611 氣壓計！");
-    while (1) delay(10);
-  }
-
-  // 2. 初始化 Grove LIS3DHTR 加速度計
-  accelerometer.begin(Wire, LIS3DHTR_DEFAULT_ADDRESS); 
-  delay(100);
   
-  // 設定加速度計採樣率與範圍 (修正後的正確參數)
-  accelerometer.setOutputDataRate(LIS3DHTR_DATARATE_50HZ);
-  accelerometer.setFullScaleRange(LIS3DHTR_RANGE_2G); // 修正：使用正確的列舉值
-
-  Serial.println("✅ 所有感測器連線成功！開始讀取數據...");
-  Serial.println("------------------------------------");
+  // 設定 Pico 的 ADC 為 12-bit 解析度
+  analogReadResolution(12);
+  
+  Serial.println("--- 類比加速度計正式運行中 ---");
+  delay(1000);
 }
 
 void loop() {
-  static unsigned long lastDisplay = 0;
+  // 讀取原始 ADC 值 (0 - 4095)
+  int rawX = analogRead(26);
+  int rawY = analogRead(27);
+  int rawZ = analogRead(28);
 
-  if (millis() - lastDisplay > 2000) {
-    lastDisplay = millis();
+  // 轉換為電壓 (3.3V / 4095)
+  float vX = rawX * (3.3 / 4095.0);
+  float vY = rawY * (3.3 / 4095.0);
+  float vZ = rawZ * (3.3 / 4095.0);
 
-    // === 讀取 MS5611 數據 ===
-    ms5611.read();
-    float temperature = ms5611.getTemperature();
-    float pressure = ms5611.getPressure();
-    float altitude = 44330.0 * (1.0 - pow((pressure / SEALEVELPRESSURE_HPA), 0.1902949));
+  // 轉換為 G 值公式: G = (電壓 - 靜止電壓) / 靈敏度
+  float gX = (vX - ZERO_G_VOLTAGE) / SENSITIVITY;
+  float gY = (vY - ZERO_G_VOLTAGE) / SENSITIVITY;
+  float gZ = (vZ - ZERO_G_VOLTAGE) / SENSITIVITY;
 
-    // === 讀取 Grove 加速度計數據 ===
-    float x = accelerometer.getAccelerationX();
-    float y = accelerometer.getAccelerationY();
-    float z = accelerometer.getAccelerationZ();
+  // 輸出結果
+  Serial.print("加速度 (g): ");
+  Serial.print("X:"); Serial.print(gX, 2);
+  Serial.print(" | Y:"); Serial.print(gY, 2);
+  Serial.print(" | Z:"); Serial.println(gZ, 2);
 
-    // === 序列埠監控器輸出 ===
-    Serial.print("系統時間: "); Serial.print(millis() / 1000); Serial.println(" 秒");
-    
-    // 氣壓計數據
-    Serial.print("[MS5611] 溫度: "); Serial.print(temperature, 1); Serial.print(" *C  | ");
-    Serial.print("氣壓: "); Serial.print(pressure, 1); Serial.print(" hPa  | ");
-    Serial.print("高度: "); Serial.print(altitude, 1); Serial.println(" m");
-
-    // 加速度計數據
-    Serial.print("[Grove 3-Axis] X: "); Serial.print(x, 2);
-    Serial.print(" G  | Y: "); Serial.print(y, 2);
-    Serial.print(" G  | Z: "); Serial.print(z, 2); Serial.println(" G");
-
-    Serial.println("------------------------------------------------");
-  }
+  delay(200); // 更新頻率 5Hz
 }
