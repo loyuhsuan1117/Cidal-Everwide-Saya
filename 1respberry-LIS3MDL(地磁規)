@@ -14,8 +14,8 @@ void setup() {
   Serial.println("--- LIS3MDL 磁力計測試 ---");
 
   // 設定 I2C 引腳
-  Wire.setSDA(8);
-  Wire.setSCL(9);
+  Wire.setSDA(4);
+  Wire.setSCL(5);
   Wire.begin();
 
   // 初始化 LIS3MDL (預設 I2C 地址通常是 0x1C 或 0x1E)
