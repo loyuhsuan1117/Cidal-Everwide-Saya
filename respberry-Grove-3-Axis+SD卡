@@ -1,0 +1,89 @@
+#include <SPI.h>
+#include <SD.h>
+
+// --- 加速度計設定區 ---
+const float ZERO_G_VOLTAGE = 1.65; 
+const float SENSITIVITY = 0.300; 
+
+// --- 🌟 PCB 腳位設定 (組合 A) ---
+#define SD_MISO_PIN 16
+#define SD_MOSI_PIN 19
+#define SD_SCK_PIN  18
+#define SD_CS_PIN   17
+const int chipSelect = SD_CS_PIN;
+
+File dataFile;
+
+void setup() {
+  Serial.begin(115200);
+  
+  // 設定 Pico 的 ADC 為 12-bit 解析度
+  analogReadResolution(12);
+  
+  Serial.println("--- 🚀 超級黑盒子航電系統（加速度計 + SD卡）啟動 ---");
+
+  // 初始化 SD 卡的 SPI0 介面
+  SPI.setRX(SD_MISO_PIN);
+  SPI.setTX(SD_MOSI_PIN);
+  SPI.setSCK(SD_SCK_PIN);
+  
+  Serial.print(">> 正在初始化 SD 卡... ");
+  if (!SD.begin(chipSelect)) {
+    Serial.println("❌ 失敗！請檢查卡片。");
+  } else {
+    Serial.println("✅ 成功！");
+    
+    // 建立新檔案並寫入 CSV 標頭
+    dataFile = SD.open("accelbox.csv", FILE_WRITE);
+    if (dataFile) {
+      dataFile.println("Runtime(ms),gX,gY,gZ");
+      dataFile.close();
+      Serial.println(">> 已建立日誌檔 accelbox.csv 並寫入 CSV 欄位標頭");
+    }
+  }
+}
+
+void loop() {
+  // 1. 讀取原始 ADC 值 (0 - 4095)
+  int rawX = analogRead(26);
+  int rawY = analogRead(27);
+  int rawZ = analogRead(28);
+
+  // 2. 轉換為電壓 (3.3V / 4095)
+  float vX = rawX * (3.3 / 4095.0);
+  float vY = rawY * (3.3 / 4095.0);
+  float vZ = rawZ * (3.3 / 4095.0);
+
+  // 3. 轉換為 G 值
+  float gX = (vX - ZERO_G_VOLTAGE) / SENSITIVITY;
+  float gY = (vY - ZERO_G_VOLTAGE) / SENSITIVITY;
+  float gZ = (vZ - ZERO_G_VOLTAGE) / SENSITIVITY;
+
+  // 🌟 核心修改：每 10 毫秒 (100Hz) 紀錄並印出一筆資料，適合抓取高頻震動
+  static unsigned long lastLog = 0;
+  if (millis() - lastLog > 10) { 
+    unsigned long currentMillis = millis();
+    lastLog = currentMillis;
+
+    // 序列埠監控器同步輸出 (方便觀測)
+    Serial.print("TIME: "); Serial.print(currentMillis);
+    Serial.print(" ms | X:"); Serial.print(gX, 2);
+    Serial.print(" | Y:"); Serial.print(gY, 2);
+    Serial.print(" | Z:"); Serial.println(gZ, 2);
+
+    // 同步實體寫入 SD 卡 (CSV 格式)
+    dataFile = SD.open("accelbox.csv", FILE_WRITE);
+    if (dataFile) {
+      dataFile.print(currentMillis);
+      dataFile.print(",");
+      dataFile.print(gX, 2);
+      dataFile.print(",");
+      dataFile.print(gY, 2);
+      dataFile.print(",");
+      dataFile.println(gZ, 2); // 寫入並換行
+      
+      // 寫完立刻關閉，防落地斷電檔案損毀
+      dataFile.close(); 
+    }
+  }
+}
