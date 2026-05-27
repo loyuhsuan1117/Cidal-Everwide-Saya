@@ -1,0 +1,90 @@
+#include <Wire.h>
+#include <MS5611.h>
+#include <SPI.h>
+#include <SD.h>
+
+// 宣告 MS5611 物件 (I2C 位址 0x77)
+MS5611 ms5611(0x77);
+
+// 🌟 【完美對齊你的 PCB 接線】
+// I2C0: 氣壓計引腳
+#define I2C_SDA_PIN 4
+#define I2C_SCL_PIN 5
+
+// SPI0: SD 卡 (組合 A)
+#define SD_MISO_PIN 16
+#define SD_MOSI_PIN 19
+#define SD_SCK_PIN  18
+#define SD_CS_PIN   17
+const int chipSelect = SD_CS_PIN;
+
+File dataFile;
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000); // 串口穩定時間
+
+  Serial.println("--- 🚀 超級黑盒子航電系統（氣壓計 + SD卡）啟動 ---");
+
+  // 1. 初始化 I2C0 總線 (GP4, GP5)
+  Wire.setSDA(I2C_SDA_PIN);
+  Wire.setSCL(I2C_SCL_PIN);
+  Wire.begin(); 
+
+  // 初始化 MS5611 氣壓計
+  ms5611.begin(&Wire); 
+  Serial.println(">> GY-63 (MS5611) 氣壓計初始化完畢");
+
+  // 2. 初始化 SD 卡的 SPI0 介面 (組合 A)
+  SPI.setRX(SD_MISO_PIN);
+  SPI.setTX(SD_MOSI_PIN);
+  SPI.setSCK(SD_SCK_PIN);
+  
+  Serial.print(">> 正在初始化 SD 卡... ");
+  if (!SD.begin(chipSelect)) {
+    Serial.println("❌ 失敗！請檢查卡片是否插好或格式化。");
+  } else {
+    Serial.println("✅ 成功！");
+    
+    // 建立新檔案並寫入 CSV 標頭
+    dataFile = SD.open("barobox.csv", FILE_WRITE);
+    if (dataFile) {
+      dataFile.println("Runtime(ms),Temperature(C),Pressure(hPa)");
+      dataFile.close();
+      Serial.println(">> 已建立日誌檔 barobox.csv 並寫入 CSV 欄位標頭");
+    }
+  }
+}
+
+void loop() {
+  // 1. 讀取氣壓計資料
+  ms5611.read();
+  float temp = ms5611.getTemperature();
+  float press = ms5611.getPressure();
+
+  // 2. 每 100 毫秒 (10Hz) 紀錄並印出一筆資料
+  static unsigned long lastLog = 0;
+  if (millis() - lastLog > 100) { 
+    unsigned long currentMillis = millis();
+    lastLog = currentMillis;
+
+    // 在電腦螢幕上即時噴數據 (方便觀測)
+    Serial.print("TIME: "); Serial.print(currentMillis);
+    Serial.print(" ms | TEMP: "); Serial.print(temp, 2);
+    Serial.print(" C | PRESS: "); Serial.print(press, 2);
+    Serial.println(" hPa");
+
+    // 同步實體寫入 SD 卡 (CSV 格式)
+    dataFile = SD.open("barobox.csv", FILE_WRITE);
+    if (dataFile) {
+      dataFile.print(currentMillis);
+      dataFile.print(",");
+      dataFile.print(temp, 2);
+      dataFile.print(",");
+      dataFile.println(press, 2); // 寫入換行
+      
+      // 💡 寫完立刻關閉檔案，確保安全實體寫入
+      dataFile.close(); 
+    }
+  }
+}
