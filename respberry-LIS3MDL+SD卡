@@ -1,0 +1,105 @@
+#include <Wire.h>
+#include <Adafruit_LIS3MDL.h>
+#include <Adafruit_Sensor.h>
+#include <SPI.h>
+#include <SD.h>
+
+Adafruit_LIS3MDL lis3mdl;
+
+// 🌟 【完美對齊你的 PCB 接線】
+// I2C1: 地磁規引腳
+#define I2C_SDA_PIN 4
+#define I2C_SCL_PIN 5
+
+// SPI0: SD 卡 (組合 A)
+#define SD_MISO_PIN 16
+#define SD_MOSI_PIN 19
+#define SD_SCK_PIN  18
+#define SD_CS_PIN   17
+const int chipSelect = SD_CS_PIN;
+
+File dataFile;
+
+void setup() {
+  Serial.begin(115200);
+  
+  // 等待序列埠
+  unsigned long start = millis();
+  while (!Serial && (millis() - start < 3000));
+
+  Serial.println("--- 🚀 超級黑盒子航電系統（地磁規 + SD卡）啟動 ---");
+
+  // 1. 初始化 I2C1 總線 (GP8, GP9)
+  Wire.setSDA(I2C_SDA_PIN);
+  Wire.setSCL(I2C_SCL_PIN);
+  Wire.begin();
+
+  // 2. 初始化 LIS3MDL (傳入共用的 Wire 以應用 GP8/GP9 設定)
+  // 預設地址通常是 0x1C，如果找不到晶片可以試著改成 0x1E
+  if (!lis3mdl.begin_I2C(0x1C, &Wire)) {          
+    Serial.println("❌ 找不到 LIS3MDL 晶片，請檢查接線或更換 I2C 地址。");
+    while (1) delay(10);
+  }
+  
+  Serial.println(">> LIS3MDL 地磁規初始化成功！");
+
+  // 設定量程與效能模式
+  lis3mdl.setPerformanceMode(LIS3MDL_ULTRAHIGHMODE);
+  lis3mdl.setOperationMode(LIS3MDL_CONTINUOUSMODE);
+  lis3mdl.setRange(LIS3MDL_RANGE_4_GAUSS);
+
+  // 3. 初始化 SD 卡的 SPI0 介面
+  SPI.setRX(SD_MISO_PIN);
+  SPI.setTX(SD_MOSI_PIN);
+  SPI.setSCK(SD_SCK_PIN);
+  
+  Serial.print(">> 正在初始化 SD 卡... ");
+  if (!SD.begin(chipSelect)) {
+    Serial.println("❌ 失敗！請檢查卡片。");
+  } else {
+    Serial.println("✅ 成功！");
+    
+    // 建立新檔案並寫入 CSV 標頭
+    dataFile = SD.open("magbox.csv", FILE_WRITE);
+    if (dataFile) {
+      dataFile.println("Runtime(ms),magX(uT),magY(uT),magZ(uT)");
+      dataFile.close();
+      Serial.println(">> 已建立日誌檔 magbox.csv 並寫入 CSV 欄位標頭");
+    }
+  }
+}
+
+void loop() {
+  // 讀取地磁規事件
+  sensors_event_t event; 
+  lis3mdl.getEvent(&event);
+
+  // 🌟 每 50 毫秒 (20Hz) 紀錄並印出一筆資料
+  static unsigned long lastLog = 0;
+  if (millis() - lastLog > 50) { 
+    unsigned long currentMillis = millis();
+    lastLog = currentMillis;
+
+    // 序列埠監控器同步輸出
+    Serial.print("TIME: "); Serial.print(currentMillis);
+    Serial.print(" ms | X: "); Serial.print(event.magnetic.x, 2);
+    Serial.print(" | Y: "); Serial.print(event.magnetic.y, 2);
+    Serial.print(" | Z: "); Serial.print(event.magnetic.z, 2);
+    Serial.println(" uT");
+
+    // 同步實體寫入 SD 卡 (CSV 格式)
+    dataFile = SD.open("magbox.csv", FILE_WRITE);
+    if (dataFile) {
+      dataFile.print(currentMillis);
+      dataFile.print(",");
+      dataFile.print(event.magnetic.x, 2);
+      dataFile.print(",");
+      dataFile.print(event.magnetic.y, 2);
+      dataFile.print(",");
+      dataFile.println(event.magnetic.z, 2); // 寫入並換行
+      
+      // 寫完立刻關閉，安全寫入
+      dataFile.close(); 
+    }
+  }
+}
