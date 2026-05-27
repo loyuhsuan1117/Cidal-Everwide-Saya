@@ -1,0 +1,107 @@
+#include <TinyGPS++.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+
+TinyGPSPlus gps;
+#define GPS_I2C_ADDR 0x42
+
+// 🌟 【已完美對齊你的 PCB 組合 A】
+#define SD_MISO_PIN 16
+#define SD_MOSI_PIN 19
+#define SD_SCK_PIN  18
+#define SD_CS_PIN   17  // Chip Select 腳位
+
+const int chipSelect = SD_CS_PIN;
+File dataFile;
+
+// u-blox M10 設定成 10Hz 更新頻率的 UBX 指令碼
+const byte SET_TO_10HZ[] = {
+  0xB5, 0x62, 0x06, 0x08, 0x06, 0x00, 0x64, 0x00, 0x01, 0x00, 0x01, 0x00, 0x7A, 0x12
+};
+
+void setup() {
+  Serial.begin(115200);
+  
+  // 1. 初始化 GPS 的 I2C0 (GP4, GP5)
+  Wire.setSDA(4);
+  Wire.setSCL(5);
+  Wire.begin(); 
+
+  // 發送 10Hz 指令給 GPS
+  delay(100);
+  Wire.beginTransmission(GPS_I2C_ADDR);
+  Wire.write(SET_TO_10HZ, sizeof(SET_TO_10HZ));
+  Wire.endTransmission();
+  Serial.println(">> GPS 10Hz 模式已啟動");
+
+  // 2. 初始化 SD 卡的 SPI0 介面
+  SPI.setRX(SD_MISO_PIN);
+  SPI.setTX(SD_MOSI_PIN);
+  SPI.setSCK(SD_SCK_PIN);
+  
+  Serial.print("正在初始化 SD 卡... ");
+  if (!SD.begin(chipSelect)) {
+    Serial.println("❌ SD 卡初始化失敗！請檢查接線、插緊卡片，或確認格式是否為 FAT32。");
+  } else {
+    Serial.println("✅ SD 卡初始化成功！");
+    
+    // 建立新檔案並寫入 CSV 標頭 (Header)
+    dataFile = SD.open("blackbox.csv", FILE_WRITE);
+    if (dataFile) {
+      dataFile.println("Sats,Latitude,Longitude,Altitude(m),Time(UTC)");
+      dataFile.close();
+      Serial.println(">> 已建立新日誌檔 blackbox.csv 並寫入標頭");
+    }
+  }
+}
+
+void loop() {
+  // 主動讀取 I2C 資料並餵給 GPS 解碼器
+  Wire.requestFrom(GPS_I2C_ADDR, 32);
+  while (Wire.available()) {
+    char c = Wire.read();
+    if (c != (char)0xFF) {
+      gps.encode(c);
+    }
+  }
+
+  // 每 100 毫秒 (10Hz) 紀錄並印出一筆資料
+  static unsigned long lastLog = 0;
+  if (millis() - lastLog > 100) { 
+    lastLog = millis();
+
+    if (gps.location.isValid()) {
+      // 1. 序列埠監控器同步噴數據（方便觀測）
+      Serial.print("SAT: "); Serial.print(gps.satellites.value());
+      Serial.print(" | LAT: "); Serial.print(gps.location.lat(), 6);
+      Serial.print(" | LNG: "); Serial.print(gps.location.lng(), 6);
+      Serial.print(" | ALT: "); Serial.print(gps.altitude.meters(), 1); Serial.print("m");
+      Serial.printf(" | TIME: %02d:%02d:%02d.%02d\n", gps.time.hour(), gps.time.minute(), gps.time.second(), gps.time.centisecond());
+
+      // 2. 同步寫入 SD 卡 (CSV 標準格式)
+      dataFile = SD.open("blackbox.csv", FILE_WRITE);
+      if (dataFile) {
+        dataFile.print(gps.satellites.value());
+        dataFile.print(",");
+        dataFile.print(gps.location.lat(), 6);
+        dataFile.print(",");
+        dataFile.print(gps.location.lng(), 6);
+        dataFile.print(",");
+        dataFile.print(gps.altitude.meters(), 1);
+        dataFile.print(",");
+        
+        // 寫入高精度時間
+        char timeBuf[16];
+        sprintf(timeBuf, "%02d:%02d:%02d.%02d", gps.time.hour(), gps.time.minute(), gps.time.second(), gps.time.centisecond());
+        dataFile.println(timeBuf);
+        
+        // 💡 寫完立刻關閉檔案，實體寫入快閃記憶體，防斷電安全機制！
+        dataFile.close(); 
+      }
+    } else {
+      Serial.print("Searching... 衛星數: ");
+      Serial.println(gps.satellites.value());
+    }
+  }
+}
