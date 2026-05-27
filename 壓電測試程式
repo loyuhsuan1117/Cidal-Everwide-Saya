@@ -1,0 +1,56 @@
+/*
+  Super Blackbox - 雙通道壓電數據採集核心程式
+  適用硬體：ESP32-S3 + TL072 電荷放大器
+*/
+
+// 定義 GPIO 腳位 (對應你原理圖上的接法)
+const int PIEZO_CH_A = 4; // GPIO04 -> 通道 A (OUT1)
+const int PIEZO_CH_B = 5; // GPIO05 -> 通道 B (OUT2)
+
+// ADC 相關參數設定
+// ESP32-S3 的 ADC 預設是 12 位元精度 (0 ~ 4095)
+const int ADC_RESOLUTION = 12; 
+const float V_REF = 3.3;       // 系統總電壓 3.3V
+const float OFFSET_V = 1.65;   // 虛擬地基準線電壓
+
+void setup() {
+  // 初始化序列埠，速度開到 115200 讓數據傳輸不卡頓
+  Serial.begin(115200);
+  while (!Serial) {
+    ; // 等待序列埠連線 (主要用於原生 USB 開發板)
+  }
+
+  // 設定 ADC 讀取精度
+  analogReadResolution(ADC_RESOLUTION);
+
+  // 設定類比輸入腳位
+  pinMode(PIEZO_CH_A, INPUT);
+  pinMode(PIEZO_CH_B, INPUT);
+
+  Serial.println("--- Super Blackbox Telemetry System Initialized ---");
+  Serial.println("Time(ms),ChA_Raw,ChB_Raw,ChA_Volt,ChB_Volt");
+}
+
+void loop() {
+  // 1. 讀取原始 ADC 數值 (0 ~ 4095)
+  int rawA = analogRead(PIEZO_CH_A);
+  int rawB = analogRead(PIEZO_CH_B);
+
+  // 2. 將原始數值換算回實際電壓值 (V)
+  // 公式：(ADC 讀值 / 4095) * 3.3V
+  float voltA = (rawA / 4095.0) * V_REF;
+  float voltB = (rawB / 4095.0) * V_REF;
+
+  /* 3. 輸出數據到電腦
+    格式採用 CSV 格式，方便你之後丟進 Excel 或 MATLAB 畫火箭發射的震動曲線。
+    同時也相容 Arduino 的 "Serial Plotter" (序列繪圖器)。
+  */
+  
+  // 測試時，我們先看電壓值的變化 (Serial Plotter 會自動畫出兩條線)
+  Serial.print(voltA);
+  Serial.print(",");
+  Serial.println(voltB);
+
+  // 採樣間隔延時：1 毫秒 (等於每秒採樣 1000 次，對高頻震動抓取非常重要)
+  delay(1);
+}
