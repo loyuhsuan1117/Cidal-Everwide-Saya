@@ -1,11 +1,18 @@
 #include <SPI.h>
 #include <SD.h>
 
-// --- 加速度計設定區 ---
-const float ZERO_G_VOLTAGE = 1.65; 
-const float SENSITIVITY = 0.300; 
+// ==========================================
+// 🚀 根據實測電壓校準後的航電參數
+// ==========================================
+const float ACTUAL_PICO_VOLTAGE = 3.30; 
 
-// --- 🌟 PCB 腳位設定 (組合 A) ---
+// 依據你的實測：X, Y 靜止時為 1.26V (0g 零點)；Z 軸受重力上升至 1.55V (差值約 0.30V 代表 1g)
+const float ZERO_G_VOLTAGE = 1.260; // 完美的 0g 基準電壓
+const float SENSITIVITY    = 0.300; // 完美的靈敏度 (300mV/g)
+
+// ==========================================
+// 🌟 PCB 腳位設定 (SPI0 組合 A)
+// ==========================================
 #define SD_MISO_PIN 16
 #define SD_MOSI_PIN 19
 #define SD_SCK_PIN  18
@@ -17,12 +24,12 @@ File dataFile;
 void setup() {
   Serial.begin(115200);
   
-  // 設定 Pico 的 ADC 為 12-bit 解析度
+  // 設定 Pico 的 ADC 為 12-bit 解析度 (0 - 4095)
   analogReadResolution(12);
   
-  Serial.println("--- 🚀 超級黑盒子航電系統（加速度計 + SD卡）啟動 ---");
+  Serial.println("--- 🚀 超級黑盒子航電系統（數據校準完畢）啟動 ---");
 
-  // 初始化 SD 卡的 SPI0 介面
+  // 初始化 SD 卡的 SPI0 介面與腳位
   SPI.setRX(SD_MISO_PIN);
   SPI.setTX(SD_MOSI_PIN);
   SPI.setSCK(SD_SCK_PIN);
@@ -44,45 +51,41 @@ void setup() {
 }
 
 void loop() {
-  // 1. 讀取原始 ADC 值 (0 - 4095)
-  int rawX = analogRead(26);
-  int rawY = analogRead(27);
-  int rawZ = analogRead(28);
-
-  // 2. 轉換為電壓 (3.3V / 4095)
-  float vX = rawX * (3.3 / 4095.0);
-  float vY = rawY * (3.3 / 4095.0);
-  float vZ = rawZ * (3.3 / 4095.0);
-
-  // 3. 轉換為 G 值
-  float gX = (vX - ZERO_G_VOLTAGE) / SENSITIVITY;
-  float gY = (vY - ZERO_G_VOLTAGE) / SENSITIVITY;
-  float gZ = (vZ - ZERO_G_VOLTAGE) / SENSITIVITY;
-
-  // 🌟 核心修改：每 10 毫秒 (100Hz) 紀錄並印出一筆資料，適合抓取高頻震動
+  // 每 10 毫秒 (100Hz) 紀錄並印出一筆資料
   static unsigned long lastLog = 0;
-  if (millis() - lastLog > 10) { 
-    unsigned long currentMillis = millis();
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - lastLog >= 10) { 
     lastLog = currentMillis;
 
-    // 序列埠監控器同步輸出 (方便觀測)
-    Serial.print("TIME: "); Serial.print(currentMillis);
-    Serial.print(" ms | X:"); Serial.print(gX, 2);
-    Serial.print(" | Y:"); Serial.print(gY, 2);
-    Serial.print(" | Z:"); Serial.println(gZ, 2);
+    // 1. 讀取原始 ADC 值
+    int rawX = analogRead(26);
+    int rawY = analogRead(27);
+    int rawZ = analogRead(28);
 
-    // 同步實體寫入 SD 卡 (CSV 格式)
+    // 2. 轉換為實際電壓
+    float vX = rawX * (ACTUAL_PICO_VOLTAGE / 4095.0);
+    float vY = rawY * (ACTUAL_PICO_VOLTAGE / 4095.0);
+    float vZ = rawZ * (ACTUAL_PICO_VOLTAGE / 4095.0);
+
+    // 3. 套用客製化校準公式，精準轉換為 G 值
+    float gX = (vX - ZERO_G_VOLTAGE) / SENSITIVITY;
+    float gY = (vY - ZERO_G_VOLTAGE) / SENSITIVITY;
+    float gZ = (vZ - ZERO_G_VOLTAGE) / SENSITIVITY;
+
+    // 4. 序列埠監控器同步輸出 (此時數值應該會非常漂亮了！)
+    Serial.print("TIME: "); Serial.print(currentMillis);
+    Serial.print(" ms | X: "); Serial.print(gX, 2); Serial.print(" g");
+    Serial.print(" | Y: "); Serial.print(gY, 2); Serial.print(" g");
+    Serial.print(" | Z: "); Serial.print(gZ, 2); Serial.println(" g");
+
+    // 5. 同步寫入 SD 卡
     dataFile = SD.open("accelbox.csv", FILE_WRITE);
     if (dataFile) {
-      dataFile.print(currentMillis);
-      dataFile.print(",");
-      dataFile.print(gX, 2);
-      dataFile.print(",");
-      dataFile.print(gY, 2);
-      dataFile.print(",");
-      dataFile.println(gZ, 2); // 寫入並換行
-      
-      // 寫完立刻關閉，防落地斷電檔案損毀
+      dataFile.print(currentMillis); dataFile.print(",");
+      dataFile.print(gX, 2); dataFile.print(",");
+      dataFile.print(gY, 2); dataFile.print(",");
+      dataFile.println(gZ, 2);
       dataFile.close(); 
     }
   }
