@@ -38,14 +38,13 @@ const float SENSITIVITY    = 0.300;
 
 // u-blox M10 10Hz 設定指令
 const byte SET_TO_10HZ[] = {
-  0xB5, 0x62, 0x06, 0x08, 0x06, 0x00, 0x64, 0x00, 0x01, 0x00, 0x01, 0x00, 0x7A, 0x12
+  0xB5, 0x62, 0x06, 0x08, 0x06, 0x00, 0x64, 0x00, 0x01, 0x00, 0x01, 0x00, 0x7A, 12
 };
 
 // ==========================================
 // ⏱️ 時間排程時間軸與狀態變數
 // ==========================================
-unsigned long lastFastLog = 0; // 🚀 全感測器 100Hz 統一時間軸 (10ms)
-unsigned long lastGpsRead = 0; // GPS 解碼時間軸 (10ms)
+unsigned long lastLogTime = 0; // 統一降速為 10Hz 時間軸 (100ms)
 
 bool baroOnline = false;
 bool magOnline  = false;
@@ -68,14 +67,14 @@ void setup() {
   Serial.begin(115200);
   delay(1000); 
 
-  Serial.println("\n--- 🚀 綜合黑盒子航電系統 (100Hz 極速極限版) 啟動 ---");
+  Serial.println("\n--- 🚀 綜合黑盒子航電系統 (10Hz 順暢流暢版) 啟動 ---");
 
   // 1. 初始化 I2C0 總線並開啟 400kHz 高速模式
   Wire.setSDA(I2C_SDA_PIN);
   Wire.setSCL(I2C_SCL_PIN);
   Wire.begin(); 
-  Wire.setClock(400000); // ⚡ 飆高 I2C 總線速度至 400kHz
-  Serial.println(">> [I2C] 總線速度已提升至 400kHz Fast Mode");
+  Wire.setClock(400000); 
+  Serial.println(">> [I2C] 總線速度維持 400kHz Fast Mode (加速資料讀取)");
 
   // GPS 初始化
   Wire.beginTransmission(GPS_I2C_ADDR);
@@ -94,8 +93,14 @@ void setup() {
     magOnline = true;
   }
 
+  // 設定 Pico 內建下拉電阻
+  pinMode(PIN_ACCEL_X, INPUT_PULLDOWN);
+  pinMode(PIN_ACCEL_Y, INPUT_PULLDOWN);
+  pinMode(PIN_ACCEL_Z, INPUT_PULLDOWN);
+  
   // 設定 Pico ADC 解析度 (12-bit)
   analogReadResolution(12);
+  Serial.println(">> [加速規] 內建下拉電阻就緒");
 
   // 2. 初始化 SD 卡 SPI0
   SPI.setRX(SD_MISO_PIN);
@@ -117,25 +122,22 @@ void setup() {
 void loop() {
   unsigned long currentMillis = millis();
 
-  // 🔄 持續高頻率餵資料給 GPS 解碼器 (每 10ms 檢查一次)
-  if (currentMillis - lastGpsRead >= 10) {
-    lastGpsRead = currentMillis;
-    if (checkI2COnline(GPS_I2C_ADDR)) {
-      Wire.requestFrom(GPS_I2C_ADDR, 32);
-      while (Wire.available()) {
-        char c = Wire.read();
-        if (c != (char)0xFF) {
-          gps.encode(c);
-        }
+  // 🔄 GPS 資料流解碼依舊保持即時接收（防止緩衝區溢位）
+  if (checkI2COnline(GPS_I2C_ADDR)) {
+    Wire.requestFrom(GPS_I2C_ADDR, 32);
+    while (Wire.available()) {
+      char c = Wire.read();
+      if (c != (char)0xFF) {
+        gps.encode(c);
       }
     }
   }
 
   // ==========================================
-  // ⚡ 核心排程：所有數據通通以 100Hz (每 10ms) 同步更新並寫入 SD 卡
+  // ⏱️ 核心排程：所有數據與寫入「同步降速」為 10Hz (每 100ms 執行一次)
   // ==========================================
-  if (currentMillis - lastFastLog >= 10) {
-    lastFastLog = currentMillis;
+  if (currentMillis - lastLogTime >= 30) { // 👈 這裡改成 100ms 囉！
+    lastLogTime = currentMillis;
 
     // --- 1. 類比加速規讀取與丟失歸零 ---
     int rawX = analogRead(PIN_ACCEL_X);
@@ -146,7 +148,8 @@ void loop() {
     float vY = rawY * (ACTUAL_PICO_VOLTAGE / 4095.0);
     float vZ = rawZ * (ACTUAL_PICO_VOLTAGE / 4095.0);
 
-    if (vX + vY + vZ < 0.15) {
+    // 配合下拉電阻或 4.7K 電阻的精準斷線判定
+    if (vX + vY + vZ < 1.00) {
       gX = 0.0; gY = 0.0; gZ = 0.0;
     } else {
       gX = (vX - ZERO_G_VOLTAGE) / SENSITIVITY;
@@ -203,7 +206,7 @@ void loop() {
     }
 
     // ==========================================
-    // 🖥️ 輸出至 Serial Monitor (100Hz 狂刷)
+    // 🖥️ 輸出至 Serial Monitor (10Hz 溫和輸出)
     // ==========================================
     Serial.print("T:"); Serial.print(currentMillis);
     Serial.print("ms | Acc:"); Serial.print(gX,1); Serial.print(","); Serial.print(gY,1); Serial.print(","); Serial.print(gZ,1);
@@ -213,7 +216,7 @@ void loop() {
     Serial.println(gpsTimeBuf);
 
     // ==========================================
-    // 💾 實體寫入 SD 卡 (100Hz 極速寫入)
+    // 💾 實體寫入 SD 卡 (10Hz 穩定寫入)
     // ==========================================
     dataFile = SD.open("rocket.csv", FILE_WRITE);
     if (dataFile) {
