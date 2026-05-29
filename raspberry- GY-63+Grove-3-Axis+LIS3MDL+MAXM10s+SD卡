@@ -77,8 +77,8 @@ void setup() {
   Wire.endTransmission();
   Serial.println(">> [GPS] 10Hz 模式指令已送出");
 
-  // 初始化 MS5611 氣壓計
-  ms5611.begin(&Wire); 
+  // 🛠️ 修正處：將原本錯誤的 ms5611.begin(&Wire); 改回標準不帶參數寫工法
+  ms5611.begin(); 
   Serial.println(">> [氣壓計] MS5611 初始化完畢");
 
   // 初始化 LIS3MDL 地磁規 (使用共用 I2C0)
