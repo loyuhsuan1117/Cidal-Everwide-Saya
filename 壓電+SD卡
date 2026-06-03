@@ -1,0 +1,89 @@
+#include <SPI.h>
+#include <FS.h>
+#include <SD.h>
+
+// ===== 你的 SD 卡引腳定義 (ESP32-S3) =====
+#define SD_CS   15
+#define SD_SCK  14
+#define SD_MISO 12
+#define SD_MOSI 13
+
+const int piezoPin1 = 4;        // 通道一 (GPIO 4)
+const int piezoPin2 = 5;        // 通道二 (GPIO 5)
+
+unsigned long previousMicros = 0;
+const unsigned long intervalMicros = 500; // 500 微秒 (2000 Hz)
+
+File dataFile;
+String dataBuffer = "";          
+const int bufferFlushSize = 512; 
+
+bool sdReady = false; // 紀錄 SD 卡狀態
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000); // 稍微等一下下，讓主板電壓穩定
+  
+  pinMode(piezoPin1, INPUT);
+  pinMode(piezoPin2, INPUT);
+
+  // 1. 初始化 SPI 腳位
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+
+  // 2. 初始化 SD 卡
+  Serial.println("Initializing SD card...");
+  if (!SD.begin(SD_CS)) {
+    Serial.println("====== [警告] SD卡初始化失敗！但程式會繼續跑螢幕波形 ======");
+    sdReady = false;
+  } else {
+    Serial.println("SD Card Initialized.");
+    
+    // 3. 將檔名修改為 PVDF.csv
+    dataFile = SD.open("/PVDF.csv", FILE_APPEND);
+    if (!dataFile) {
+      Serial.println("[警告] PVDF.csv 開啟失敗！");
+      sdReady = false;
+    } else {
+      // 寫入 CSV 欄位標頭
+      dataFile.println("Timestamp_ms,Piezo1,Piezo2");
+      dataFile.flush(); 
+      sdReady = true;
+      Serial.println("Super Blackbox - SD Logging Started! (檔名: PVDF.csv)");
+    }
+  }
+}
+
+void main_loop() {
+  unsigned long currentMicros = micros();
+
+  // 檢查 500 微秒時間是否到了
+  if (currentMicros - previousMicros >= intervalMicros) {
+    previousMicros = currentMicros;
+
+    // 讀取雙通道原始 ADC 數值
+    int rawValue1 = analogRead(piezoPin1);
+    int rawValue2 = analogRead(piezoPin2);
+
+    // 1. 不管 SD 卡狀態如何，一律先噴數據到 Serial Plotter，保證螢幕一定有畫面！
+    Serial.print(rawValue1);
+    Serial.print(",");
+    Serial.println(rawValue2);
+
+    // 2. 如果 SD 卡是好的，才把資料背景寫入
+    if (sdReady && dataFile) {
+      String dataString = String(millis()) + "," + String(rawValue1) + "," + String(rawValue2) + "\n";
+      dataBuffer += dataString;
+
+      // 檢查緩衝區資料是不是累積滿了？
+      if (dataBuffer.length() >= bufferFlushSize) {
+        dataFile.print(dataBuffer); // 寫入 SD 卡
+        dataFile.flush();           // 強制刷入記憶卡
+        dataBuffer = "";            // 清空緩衝區重新累積
+      }
+    }
+  }
+}
+
+void loop() {
+  main_loop();
+}
