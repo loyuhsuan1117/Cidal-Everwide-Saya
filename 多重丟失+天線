@@ -22,9 +22,9 @@ const int chipSelect = SD_CS_PIN;
 #define PIN_ACCEL_Y 27
 #define PIN_ACCEL_Z 28
 
-// 📡 新增：備用 E220 LoRa 冗餘系統引腳
-const int LORA_AUX = 2;         // AUX 探針接 GP2
-const int BOARD_LED = 25;       // Pico 板載 LED 做發射指示
+// 📡 新增：E220-900T22D LoRa 冗餘系統引腳與指示燈
+const int LORA_AUX = 2;         // AUX 狀態探針接 GP2
+const int BOARD_LED = 25;       // Pico 板載 LED (兼發射指示)
 
 // ==========================================
 // 🎯 感測器物件與校準常數設定
@@ -71,24 +71,24 @@ bool checkI2COnline(byte address) {
 }
 
 void setup() {
-  pinMode(LORA_AUX, INPUT); // 💡 開機立刻守住 AUX 物理電位
+  // 📡 優先設定：開機立刻守住 AUX 物理引腳狀態
+  pinMode(LORA_AUX, INPUT);
   pinMode(BOARD_LED, OUTPUT);
 
   Serial.begin(115200);
   delay(1000); 
 
-  Serial.println("\n--- 🚀 綜合黑盒子航電系統 (智能濾噪斷線歸零版) 啟動 ---");
+  Serial.println("\n--- 🚀 綜合黑盒子航電系統 (無線遙測完全體整合版) 啟動 ---");
 
-  // 📡 備用傳輸硬體串口啟動 (GP0=TX, GP1=RX) 
-  // 絕對不對模組 write 任何指令，防止 USB 控制器鎖死
+  // 📡 啟動硬體串口一 (GP0=TX, GP1=RX) 與 E220 建立管道
   Serial1.begin(9600); 
 
-  // 🔍 實體斷線攔截：檢查備用 LoRa 的過電狀態
+  // 🔍 實體斷線攔截：利用 AUX 探針檢查發射端 LoRa 硬體物理過電狀態
   if (digitalRead(LORA_AUX) == HIGH) {
-    Serial.println(">> [冗餘防護] E220 備用 LoRa 模組過電正常 (AUX High)");
+    Serial.println(">> [冗餘防護] E220 發射端 LoRa 模組過電正常 (AUX High)");
     digitalWrite(BOARD_LED, HIGH); delay(200); digitalWrite(BOARD_LED, LOW);
   } else {
-    Serial.println("❌ [硬體錯誤] E220 備用 LoRa 未過電或 AUX 杜邦線斷裂！請立刻檢查！");
+    Serial.println("❌ [硬體錯誤] 發射端 LoRa 未過電或 AUX 杜邦線斷裂！請立刻檢查實體線路！");
   }
 
   // 1. 初始化 I2C0 總線並開啟 400kHz 高速模式
@@ -97,7 +97,7 @@ void setup() {
   Wire.begin(); 
   Wire.setClock(400000); 
   
-  // 設定 I2C 硬體超時限制為 20 毫秒
+  // 設定 I2C 硬體超時限制為 20 毫秒 (防止火箭升空時突波掛起主程式)
   Wire.setTimeout(20); 
 
   // GPS 初始化並發送 10Hz 指令
@@ -145,7 +145,7 @@ void setup() {
 void loop() {
   unsigned long currentMillis = millis();
 
-  // 🔄 GPS 資料流解碼保持即時接收
+  // 🔄 GPS 資料流解碼保持即時接收 (非阻塞持續監聽)
   if (checkI2COnline(GPS_I2C_ADDR)) {
     Wire.requestFrom(GPS_I2C_ADDR, 32);
     while (Wire.available()) {
@@ -221,11 +221,13 @@ void loop() {
       float rawTemp = ms5611.getTemperature();
       float rawPress = ms5611.getPressure();
 
+      // 智能濾噪
       if (rawPress > 300.0 && rawTemp != 0.0) {
         tempC = rawTemp;
         pressHPa = rawPress;
       }
     } else {
+      // 實體脫落
       baroOnline = false;
       tempC = 0.0;
       pressHPa = 0.0;
@@ -244,7 +246,7 @@ void loop() {
     }
 
     // ==========================================
-    // 🖥️ 輸出至 Serial Monitor 
+    // 🖥️ 輸出至本地 Serial Monitor (開發與除錯監控)
     // ==========================================
     Serial.print("T:"); Serial.print(currentMillis);
     Serial.print("ms | Acc:"); Serial.print(gX,1); Serial.print(","); Serial.print(gY,1); Serial.print(","); Serial.print(gZ,1);
@@ -254,7 +256,7 @@ void loop() {
     Serial.println(gpsTimeBuf);
 
     // ==========================================
-    // 💾 實體寫入 SD 卡 
+    // 💾 實體寫入 SD 卡 (已徹底修復套娃錯誤)
     // ==========================================
     dataFile = SD.open("rocket.csv", FILE_WRITE);
     if (dataFile) {
@@ -270,27 +272,27 @@ void loop() {
       dataFile.print(gpsSats); dataFile.print(",");
       dataFile.print(gpsLat, 6); dataFile.print(",");
       dataFile.print(gpsLng, 6); dataFile.print(",");
-      dataFile.print(gpsAlt, 1); dataFile.print(",");
+      dataFile.print(gpsAlt, 1); dataFile.print(","); 
       dataFile.println(gpsTimeBuf);
       dataFile.close(); 
     }
 
     // ==========================================
-    // 📡 新增：同步將航電數據噴向地面備用端 (CSV格式)
+    // 📡 終極對齊：同步將 11 欄位完全體數據噴向天空！
     // ==========================================
-    // 精簡傳輸字串，降低 LoRa 慢速串口的傳輸負擔，完美對齊定時
     String loraBuffer = "";
     loraBuffer += String(currentMillis) + ",";
     loraBuffer += String(gX, 1) + "," + String(gY, 1) + "," + String(gZ, 1) + ",";
+    loraBuffer += String(magX, 1) + "," + String(magY, 1) + "," + String(magZ, 1) + ","; 
     loraBuffer += String(tempC, 1) + "," + String(pressHPa, 1) + ",";
     loraBuffer += String(gpsSats) + "," + String(gpsAlt, 1);
     
-    // 使用 println 自動在字串尾巴補上 '\n'，配合地面站的蓄水池撈取
+    // 射向地面站接收端
     Serial1.println(loraBuffer);
 
-    // 快閃發射指示燈
+    // 毫秒級快閃發射指示燈
     digitalWrite(BOARD_LED, HIGH);
-    delayMicroseconds(50); // 微秒級閃爍，絕不干擾任何排程
+    delayMicroseconds(50); 
     digitalWrite(BOARD_LED, LOW);
   }
 }
