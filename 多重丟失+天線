@@ -22,9 +22,8 @@ const int chipSelect = SD_CS_PIN;
 #define PIN_ACCEL_Y 27
 #define PIN_ACCEL_Z 28
 
-// 📡 新增：E220-900T22D LoRa 冗餘系統引腳與指示燈
-const int LORA_AUX = 2;         // AUX 狀態探針接 GP2
-const int BOARD_LED = 25;       // Pico 板載 LED (兼發射指示)
+const int LORA_AUX = 2;         
+const int BOARD_LED = 25;       
 
 // ==========================================
 // 🎯 感測器物件與校準常數設定
@@ -39,7 +38,6 @@ File dataFile;
 const float ACTUAL_PICO_VOLTAGE = 3.30; 
 const float SENSITIVITY         = 0.300; 
 
-// 💡 基於你最新的硬體電路配置校準零點
 const float ZERO_G_VOLTAGE_X    = 0.360; 
 const float ZERO_G_VOLTAGE_Y    = 0.395; 
 const float ZERO_G_VOLTAGE_Z    = 0.120; 
@@ -52,11 +50,12 @@ const byte SET_TO_10HZ[] = {
 // ⏱️ 時間排程時間軸與狀態變數
 // ==========================================
 unsigned long lastLogTime = 0; 
+unsigned long lastLoraTime = 0; 
 
 bool baroOnline = false;
 bool magOnline  = false;
+bool gpsOnline  = false; 
 
-// 全域快取變數（給予安全的初始化基準，防止啟動時未就緒）
 float gX = 0, gY = 0, gZ = 0;
 float magX = 0, magY = 0, magZ = 0;
 float tempC = 25.0, pressHPa = 1013.25; 
@@ -64,52 +63,52 @@ int gpsSats = 0;
 float gpsLat = 0.0, gpsLng = 0.0, gpsAlt = 0.0;
 char gpsTimeBuf[16] = "00:00:00.00";
 
-// 🔍 檢查 I2C 裝置是否在線
 bool checkI2COnline(byte address) {
   Wire.beginTransmission(address);
   return (Wire.endTransmission() == 0);
 }
 
 void setup() {
-  // 📡 優先設定：開機立刻守住 AUX 物理引腳狀態
   pinMode(LORA_AUX, INPUT);
   pinMode(BOARD_LED, OUTPUT);
 
   Serial.begin(115200);
-  delay(1000); 
+  unsigned long startWait = millis();
+  while (!Serial && (millis() - startWait < 1500)); 
 
-  Serial.println("\n--- 🚀 綜合黑盒子航電系統 (無線遙測完全體整合版) 啟動 ---");
-
-  // 📡 啟動硬體串口一 (GP0=TX, GP1=RX) 與 E220 建立管道
+  Serial.println("\n--- 🚀 綜合航电系統 (13欄位全數據經緯度完整版) 啟動 ---");
   Serial1.begin(9600); 
 
-  // 🔍 實體斷線攔截：利用 AUX 探針檢查發射端 LoRa 硬體物理過電狀態
   if (digitalRead(LORA_AUX) == HIGH) {
     Serial.println(">> [冗餘防護] E220 發射端 LoRa 模組過電正常 (AUX High)");
-    digitalWrite(BOARD_LED, HIGH); delay(200); digitalWrite(BOARD_LED, LOW);
   } else {
-    Serial.println("❌ [硬體錯誤] 發射端 LoRa 未過電或 AUX 杜邦線斷裂！請立刻檢查實體線路！");
+    Serial.println("❌ [硬體錯誤] 發射端 LoRa 未過電！");
   }
 
-  // 1. 初始化 I2C0 總線並開啟 400kHz 高速模式
   Wire.setSDA(I2C_SDA_PIN);
   Wire.setSCL(I2C_SCL_PIN);
   Wire.begin(); 
   Wire.setClock(400000); 
+  Wire.setTimeout(10); 
+
+  Serial.println(">> [防卡死偵測] 正在掃描 GPS 實體在線狀態...");
+  delay(500); 
   
-  // 設定 I2C 硬體超時限制為 20 毫秒 (防止火箭升空時突波掛起主程式)
-  Wire.setTimeout(20); 
+  if (checkI2COnline(GPS_I2C_ADDR)) {
+    Serial.println(">> [GPS] 硬體在線！開始注入 10Hz 指令...");
+    Wire.beginTransmission(GPS_I2C_ADDR);
+    Wire.write(SET_TO_10HZ, sizeof(SET_TO_10HZ));
+    Wire.endTransmission(); 
+    gpsOnline = true;
+    Serial.println(">> [GPS] 10Hz 指令發送完畢。");
+  } else {
+    Serial.println("❌ [致命錯誤] I2C 總線上找不到 GPS 模組 (0x42)！");
+    gpsOnline = false;
+  }
 
-  // GPS 初始化並發送 10Hz 指令
-  Wire.beginTransmission(GPS_I2C_ADDR);
-  Wire.write(SET_TO_10HZ, sizeof(SET_TO_10HZ));
-  Wire.endTransmission();
-
-  // 氣壓計初次上線
   ms5611.begin(); 
   baroOnline = checkI2COnline(0x77);
 
-  // 地磁規初次上線
   if (lis3mdl.begin_I2C(0x1C, &Wire)) {
     lis3mdl.setPerformanceMode(LIS3MDL_ULTRAHIGHMODE);
     lis3mdl.setOperationMode(LIS3MDL_CONTINUOUSMODE);
@@ -117,182 +116,137 @@ void setup() {
     magOnline = true;
   }
 
-  // 設定 Pico 內建下拉電阻作為二次安全防線
   pinMode(PIN_ACCEL_X, INPUT_PULLDOWN);
   pinMode(PIN_ACCEL_Y, INPUT_PULLDOWN);
   pinMode(PIN_ACCEL_Z, INPUT_PULLDOWN);
-  
   analogReadResolution(12);
-  Serial.println(">> [航電防護] 智能突波濾除與實體斷線歸零雙軌部署就緒");
 
-  // 2. 初始化 SD 卡 SPI0
-  SPI.setRX(SD_MISO_PIN);
-  SPI.setTX(SD_MOSI_PIN);
-  SPI.setSCK(SD_SCK_PIN);
-  
+  SPI.setRX(SD_MISO_PIN); SPI.setTX(SD_MOSI_PIN); SPI.setSCK(SD_SCK_PIN);
   if (SD.begin(chipSelect)) {
     dataFile = SD.open("rocket.csv", FILE_WRITE);
     if (dataFile) {
       dataFile.println("Runtime(ms),gX,gY,gZ,magX(uT),magY(uT),magZ(uT),Temp(C),Press(hPa),Sats,Lat,Lng,Alt(m),GPSTime(UTC)");
       dataFile.close();
-      Serial.println(">> [SD卡] rocket.csv 標頭寫入成功！");
     }
-  } else {
-    Serial.println("❌ [警告] SD 卡未就緒！");
   }
 }
 
 void loop() {
   unsigned long currentMillis = millis();
 
-  // 🔄 GPS 資料流解碼保持即時接收 (非阻塞持續監聽)
-  if (checkI2COnline(GPS_I2C_ADDR)) {
-    Wire.requestFrom(GPS_I2C_ADDR, 32);
-    while (Wire.available()) {
-      char c = Wire.read();
-      if (c != (char)0xFF) {
-        gps.encode(c);
+  // GPS 讀取與解碼
+  if (gpsOnline && checkI2COnline(GPS_I2C_ADDR)) {
+    int bytesRead = 0;
+    while (Wire.requestFrom(GPS_I2C_ADDR, 32) > 0 && bytesRead < 128) {
+      bool hasData = false;
+      while (Wire.available()) {
+        char c = Wire.read();
+        bytesRead++;
+        if (c != (char)0xFF) {
+          gps.encode(c);
+          hasData = true;
+        }
       }
+      if (!hasData) break; 
     }
   }
 
   // ==========================================
-  // ⏱️ 核心排程：所有數據與寫入同步降速為 10Hz (每 100ms 執行一次)
+  // ⏱️ 核心排程一：感測器讀取與本地印出 (10Hz)
   // ==========================================
   if (currentMillis - lastLogTime >= 100) { 
     lastLogTime = currentMillis;
 
-    // --- 1. 類比加速規讀取與過濾 ---
+    // 加速規
     long sumX = 0, sumY = 0, sumZ = 0;
-    const int sampleCount = 5; 
-    for(int i = 0; i < sampleCount; i++) {
-      sumX += analogRead(PIN_ACCEL_X);
-      sumY += analogRead(PIN_ACCEL_Y);
-      sumZ += analogRead(PIN_ACCEL_Z);
+    for(int i = 0; i < 5; i++) {
+      sumX += analogRead(PIN_ACCEL_X); sumY += analogRead(PIN_ACCEL_Y); sumZ += analogRead(PIN_ACCEL_Z);
       delayMicroseconds(10); 
     }
-    int rawX = sumX / sampleCount;
-    int rawY = sumY / sampleCount;
-    int rawZ = sumZ / sampleCount;
+    float vX = (sumX / 5) * (ACTUAL_PICO_VOLTAGE / 4095.0);
+    float vY = (sumY / 5) * (ACTUAL_PICO_VOLTAGE / 4095.0);
+    float vZ = (sumZ / 5) * (ACTUAL_PICO_VOLTAGE / 4095.0);
 
-    float vX = rawX * (ACTUAL_PICO_VOLTAGE / 4095.0);
-    float vY = rawY * (ACTUAL_PICO_VOLTAGE / 4095.0);
-    float vZ = rawZ * (ACTUAL_PICO_VOLTAGE / 4095.0);
-
-    // 實體下拉斷線判定
     if (vX < 0.15 || vY < 0.15 || vZ < 0.15) {
       gX = 0.0; gY = 0.0; gZ = 0.0;
     } else {
-      gX = (vX - ZERO_G_VOLTAGE_X) / SENSITIVITY;
-      gY = (vY - ZERO_G_VOLTAGE_Y) / SENSITIVITY;
-      gZ = (vZ - ZERO_G_VOLTAGE_Z) / SENSITIVITY;
+      gX = (vX - ZERO_G_VOLTAGE_X) / SENSITIVITY; gY = (vY - ZERO_G_VOLTAGE_Y) / SENSITIVITY; gZ = (vZ - ZERO_G_VOLTAGE_Z) / SENSITIVITY;
     }
 
-    // --- 2. 地磁規讀取、熱插拔與丟失歸零 ---
+    // 地磁規
     if (checkI2COnline(0x1C)) {
-      if (!magOnline) { 
-        if (lis3mdl.begin_I2C(0x1C, &Wire)) {
-          lis3mdl.setPerformanceMode(LIS3MDL_ULTRAHIGHMODE);
-          lis3mdl.setOperationMode(LIS3MDL_CONTINUOUSMODE);
-          lis3mdl.setRange(LIS3MDL_RANGE_4_GAUSS);
-          magOnline = true;
-        }
-      }
-      if (magOnline) {
-        sensors_event_t event; 
-        lis3mdl.getEvent(&event);
-        magX = event.magnetic.x;
-        magY = event.magnetic.y;
-        magZ = event.magnetic.z;
-      }
+      if (!magOnline) { lis3mdl.begin_I2C(0x1C, &Wire); magOnline = true; }
+      sensors_event_t event; lis3mdl.getEvent(&event);
+      magX = event.magnetic.x; magY = event.magnetic.y; magZ = event.magnetic.z;
     } else {
-      magOnline = false;
-      magX = 0.0; magY = 0.0; magZ = 0.0;
+      magOnline = false; magX = 0.0; magY = 0.0; magZ = 0.0;
     }
 
-    // --- 3. 氣壓計讀取：區分「單次雜訊」與「實體斷線」 ---
+    // 氣壓計
     if (checkI2COnline(0x77)) {
-      if (!baroOnline) {
-        ms5611.begin();
-        baroOnline = true;
-      }
-      
+      if (!baroOnline) { ms5611.begin(); baroOnline = true; }
       ms5611.read();
-      float rawTemp = ms5611.getTemperature();
-      float rawPress = ms5611.getPressure();
+      float rawTemp = ms5611.getTemperature(); float rawPress = ms5611.getPressure();
+      if (rawPress > 300.0 && rawTemp != 0.0) { tempC = rawTemp; pressHPa = rawPress; }
+    } else {
+      baroOnline = false; tempC = 0.0; pressHPa = 0.0;
+    }
 
-      // 智能濾噪
-      if (rawPress > 300.0 && rawTemp != 0.0) {
-        tempC = rawTemp;
-        pressHPa = rawPress;
+    // 🛠️ GPS 經緯度快取更新 (終於補上了！)
+    if (gpsOnline) {
+      gpsSats = gps.satellites.value();
+      if (gps.location.isValid()) {
+        gpsLat = gps.location.lat(); 
+        gpsLng = gps.location.lng(); 
+        gpsAlt = gps.altitude.meters();
+        sprintf(gpsTimeBuf, "%02d:%02d:%02d.%02d", gps.time.hour(), gps.time.minute(), gps.time.second(), gps.time.centisecond());
+      } else {
+        gpsLat = 0.0; gpsLng = 0.0; gpsAlt = 0.0; strcpy(gpsTimeBuf, "00:00:00.00");
       }
     } else {
-      // 實體脫落
-      baroOnline = false;
-      tempC = 0.0;
-      pressHPa = 0.0;
+      gpsSats = -1;
     }
 
-    // --- 4. GPS 快取更新 ---
-    gpsSats = gps.satellites.value();
-    if (gps.location.isValid() && checkI2COnline(GPS_I2C_ADDR)) {
-      gpsLat = gps.location.lat();
-      gpsLng = gps.location.lng();
-      gpsAlt = gps.altitude.meters();
-      sprintf(gpsTimeBuf, "%02d:%02d:%02d.%02d", gps.time.hour(), gps.time.minute(), gps.time.second(), gps.time.centisecond());
-    } else {
-      gpsLat = 0.0; gpsLng = 0.0; gpsAlt = 0.0;
-      strcpy(gpsTimeBuf, "00:00:00.00");
-    }
-
-    // ==========================================
-    // 🖥️ 輸出至本地 Serial Monitor (開發與除錯監控)
-    // ==========================================
+    // 🖥️ 修正後的本地端序列埠輸出（包含經緯度）
     Serial.print("T:"); Serial.print(currentMillis);
     Serial.print("ms | Acc:"); Serial.print(gX,1); Serial.print(","); Serial.print(gY,1); Serial.print(","); Serial.print(gZ,1);
     Serial.print(" | Mag:"); Serial.print(magX,1); Serial.print(","); Serial.print(magY,1); Serial.print(","); Serial.print(magZ,1);
     Serial.print(" | Baro:"); Serial.print(tempC,1); Serial.print("C,"); Serial.print(pressHPa,1); Serial.print("hPa");
-    Serial.print(" | GPS(Sats):"); Serial.print(gpsSats); Serial.print(" | Alt:"); Serial.print(gpsAlt,1); Serial.print("m | ");
-    Serial.println(gpsTimeBuf);
+    Serial.print(" | GPS_Sats:"); Serial.print(gpsSats);
+    Serial.print(" | Lat:"); Serial.print(gpsLat, 6); // 🗺️ 補上緯度
+    Serial.print(" | Lng:"); Serial.print(gpsLng, 6); // 🗺️ 補上經度
+    Serial.print(" | Alt:"); Serial.print(gpsAlt,1); Serial.println("m");
 
-    // ==========================================
-    // 💾 實體寫入 SD 卡 (已徹底修復套娃錯誤)
-    // ==========================================
+    // SD 卡實體寫入
     dataFile = SD.open("rocket.csv", FILE_WRITE);
     if (dataFile) {
       dataFile.print(currentMillis); dataFile.print(",");
-      dataFile.print(gX, 2); dataFile.print(",");
-      dataFile.print(gY, 2); dataFile.print(",");
-      dataFile.print(gZ, 2); dataFile.print(",");
-      dataFile.print(magX, 2); dataFile.print(",");
-      dataFile.print(magY, 2); dataFile.print(",");
-      dataFile.print(magZ, 2); dataFile.print(",");
-      dataFile.print(tempC, 2); dataFile.print(",");
-      dataFile.print(pressHPa, 2); dataFile.print(",");
-      dataFile.print(gpsSats); dataFile.print(",");
-      dataFile.print(gpsLat, 6); dataFile.print(",");
-      dataFile.print(gpsLng, 6); dataFile.print(",");
-      dataFile.print(gpsAlt, 1); dataFile.print(","); 
-      dataFile.println(gpsTimeBuf);
+      dataFile.print(gX, 2); dataFile.print(","); dataFile.print(gY, 2); dataFile.print(","); dataFile.print(gZ, 2); dataFile.print(",");
+      dataFile.print(magX, 2); dataFile.print(","); dataFile.print(magY, 2); dataFile.print(","); dataFile.print(magZ, 2); dataFile.print(",");
+      dataFile.print(tempC, 2); dataFile.print(","); dataFile.print(pressHPa, 2); dataFile.print(",");
+      dataFile.print(gpsSats); dataFile.print(","); dataFile.print(gpsLat, 6); dataFile.print(","); dataFile.print(gpsLng, 6); dataFile.print(",");
+      dataFile.print(gpsAlt, 1); dataFile.print(","); dataFile.println(gpsTimeBuf);
       dataFile.close(); 
     }
+  }
 
-    // ==========================================
-    // 📡 終極對齊：同步將 11 欄位完全體數據噴向天空！
-    // ==========================================
+  // ==========================================
+  // ⏱️ 核心排程二：LoRa 無線發射 (4Hz / 250ms)
+  // ==========================================
+  if (currentMillis - lastLoraTime >= 250) {
+    lastLoraTime = currentMillis;
+
+    // 🛠️ LoRa 發射字串同步補上經度與緯度！(完全體)
     String loraBuffer = "";
     loraBuffer += String(currentMillis) + ",";
     loraBuffer += String(gX, 1) + "," + String(gY, 1) + "," + String(gZ, 1) + ",";
     loraBuffer += String(magX, 1) + "," + String(magY, 1) + "," + String(magZ, 1) + ","; 
     loraBuffer += String(tempC, 1) + "," + String(pressHPa, 1) + ",";
-    loraBuffer += String(gpsSats) + "," + String(gpsAlt, 1);
+    loraBuffer += String(gpsSats) + ",";
+    loraBuffer += String(gpsLat, 6) + "," + String(gpsLng, 6) + ","; // 🗺️ 這裡補上了！
+    loraBuffer += String(gpsAlt, 1);
     
-    // 射向地面站接收端
     Serial1.println(loraBuffer);
-
-    // 毫秒級快閃發射指示燈
-    digitalWrite(BOARD_LED, HIGH);
-    delayMicroseconds(50); 
-    digitalWrite(BOARD_LED, LOW);
+    digitalWrite(BOARD_LED, HIGH); delayMicroseconds(50); digitalWrite(BOARD_LED, LOW);
   }
 }
