@@ -2,8 +2,7 @@
 
 const int BOARD_LED = 25; 
 const int LORA_AUX = 2;          
-
-String inputBuffer = ""; // 建立一個全域蓄水池，用來黏合斷掉的字
+String inputBuffer = ""; 
 
 void setup() {
   pinMode(LORA_AUX, INPUT); 
@@ -11,55 +10,50 @@ void setup() {
   delay(800); 
   Serial1.begin(9600); 
   pinMode(BOARD_LED, OUTPUT);
-
   Serial.println("==============================================");
-  Serial.println("📡 [Pico接收地面站] \n 終結斷字 · 換行符精準黏合版 啟動");
+  Serial.println("📡 [地面接收站] \n 13欄位全數據經緯度儀表板 啟動");
   Serial.println("==============================================");
-  inputBuffer.reserve(200); // 預留記憶體空間，跑起來更流暢
+  inputBuffer.reserve(200); 
 }
 
 void loop() {
-  // 📡 有多少字就吃多少字，不加任何 delay
   while (Serial1.available() > 0) {
     char c = (char)Serial1.read();
-    
     if (c == '\n') {
-      // 🎯 重大時刻：抓到火箭傳過來的換行符號了！代表一整行數據完整進站！
       inputBuffer.trim(); 
-      
       if (inputBuffer.length() > 0) {
         unsigned long rTime = 0;
         float gx = 0.0, gy = 0.0, gz = 0.0;
         float mx = 0.0, my = 0.0, mz = 0.0;
         float temp = 0.0, press = 0.0;
-        int sats = 0;
-        float alt = 0.0;
+        int sats = -999;
+        float lat = 0.0, lng = 0.0, alt = -999.0;
 
-        // 進行 11 欄位對號入座
-        int parsed = sscanf(inputBuffer.c_str(), "%lu,%f,%f,%f,%f,%f,%f,%f,%f,%d,%f", 
-                            &rTime, &gx, &gy, &gz, &mx, &my, &mz, &temp, &press, &sats, &alt);
+        // 🎯 完美解析 13 個欄位
+        int parsed = sscanf(inputBuffer.c_str(), "%lu,%f,%f,%f,%f,%f,%f,%f,%f,%d,%f,%f,%f", 
+                            &rTime, &gx, &gy, &gz, &mx, &my, &mz, &temp, &press, &sats, &lat, &lng, &alt);
 
-        if (parsed == 11) {
-          // 🟢 完美的 11 欄位完全體儀表板
+        if (parsed >= 9) {
           Serial.print("T:"); Serial.print(rTime);
           Serial.print("ms | Acc:"); Serial.print(gx, 1); Serial.print(","); Serial.print(gy, 1); Serial.print(","); Serial.print(gz, 1);
           Serial.print(" | Mag:"); Serial.print(mx, 1); Serial.print(","); Serial.print(my, 1); Serial.print(","); Serial.print(mz, 1);
           Serial.print(" | Baro:"); Serial.print(temp, 1); Serial.print("C,"); Serial.print(press, 1); Serial.print("hPa");
-          Serial.print(" | GPS(Sats):"); Serial.print(sats); 
-          Serial.print(" | Alt:"); Serial.print(alt, 1); Serial.println("m");
+          
+          if (parsed == 13 && sats != -999) {
+            Serial.print(" | GPS_Sats:"); Serial.print(sats); 
+            Serial.print(" | Lat:"); Serial.print(lat, 6);
+            Serial.print(" | Lng:"); Serial.print(lng, 6);
+            Serial.print(" | Alt:"); Serial.print(alt, 1); Serial.println("m");
+          } else {
+            Serial.println(" | 📡 GPS: [等待物理定位/定位失效]");
+          }
         } else {
-          // 🟡 如果字串不全，但至少他是完整的一行，就噴原始 CSV
-          Serial.print("🛰️ [完整資料流]: ");
-          Serial.println(inputBuffer);
+          Serial.print("🛰️ [原始流]: "); Serial.println(inputBuffer);
         }
       }
-      
-      // 清空緩衝區，等待下一行火箭數據
       inputBuffer = "";
       digitalWrite(BOARD_LED, HIGH); delayMicroseconds(50); digitalWrite(BOARD_LED, LOW);
-    } 
-    else if (c != '\r') {
-      // 如果不是換行符，代表資料還沒傳完，死死把它黏在緩衝區後面
+    } else if (c != '\r') {
       inputBuffer += c;
     }
   }
