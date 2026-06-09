@@ -5,6 +5,7 @@
 #include <MS5611.h>
 #include <Adafruit_LIS3MDL.h>
 #include <Adafruit_Sensor.h>
+#include <math.h> // ⚙️ 新增：數學庫以供計算高度公式使用
 
 // ==========================================
 // 🌟 硬體腳位與引腳定義 (RP2040 Pico)
@@ -40,6 +41,9 @@ const float ACTUAL_PICO_VOLTAGE = 3.30;
 const float ZERO_G_VOLTAGE = 1.260; 
 const float SENSITIVITY    = 0.300; 
 
+// ⚙️ 新增：基準海平面氣壓 (單位: hPa)
+const float SEA_LEVEL_PRESSURE = 1013.25; 
+
 // u-blox M10 10Hz 設定指令
 const byte SET_TO_10HZ[] = {
   0xB5, 0x62, 0x06, 0x08, 0x06, 0x00, 0x64, 0x00, 0x01, 0x00, 0x01, 0x00, 0x7A, 0x12
@@ -55,7 +59,7 @@ unsigned long lastSlowLog  = 0; // 10Hz  (100ms)
 // 全域快取變數 (用於高頻資料輸出時，填入最新的慢速感測器數據)
 float gX = 0, gY = 0, gZ = 0;
 float magX = 0, magY = 0, magZ = 0;
-float tempC = 0, pressHPa = 0;
+float tempC = 0, pressHPa = 0, baroAlt = 0; // ⚙️ 修改：新增 baroAlt 變數
 int gpsSats = 0;
 float gpsLat = 0.0, gpsLng = 0.0, gpsAlt = 0.0;
 char gpsTimeBuf[16] = "00:00:00.00";
@@ -77,7 +81,7 @@ void setup() {
   Wire.endTransmission();
   Serial.println(">> [GPS] 10Hz 模式指令已送出");
 
-  // 🛠️ 修正處：將原本錯誤的 ms5611.begin(&Wire); 改回標準不帶參數寫工法
+  // ms5611 初始化
   ms5611.begin(); 
   Serial.println(">> [氣壓計] MS5611 初始化完畢");
 
@@ -109,8 +113,8 @@ void setup() {
     // 建立整合式火箭數據日誌檔
     dataFile = SD.open("rocket.csv", FILE_WRITE);
     if (dataFile) {
-      // 寫入完整的 CSV 標頭
-      dataFile.println("Runtime(ms),gX,gY,gZ,magX(uT),magY(uT),magZ(uT),Temp(C),Press(hPa),Sats,Lat,Lng,Alt(m),GPSTime(UTC)");
+      // ⚙️ 修改：將原本的 Alt(m) 改為 GpsAlt(m) 並新增 BaroAlt(m) 到標頭
+      dataFile.println("Runtime(ms),gX,gY,gZ,magX(uT),magY(uT),magZ(uT),Temp(C),Press(hPa),BaroAlt(m),Sats,Lat,Lng,GpsAlt(m),GPSTime(UTC)");
       dataFile.close();
       Serial.println(">> 數據日誌檔 rocket.csv 建立完成，標頭寫入成功！");
     }
@@ -168,10 +172,12 @@ void loop() {
   if (currentMillis - lastSlowLog >= 100) {
     lastSlowLog = currentMillis;
 
-    // 1. 讀取氣壓計
+    // 1. 讀取氣壓計並計算高度
     ms5611.read();
     tempC = ms5611.getTemperature();
     pressHPa = ms5611.getPressure();
+    // ⚙️ 新增：大氣公式計算高度
+    baroAlt = 44330.0 * (1.0 - pow((pressHPa / SEA_LEVEL_PRESSURE), 0.1903));
 
     // 2. 獲取 GPS 狀態
     gpsSats = gps.satellites.value();
@@ -193,9 +199,10 @@ void loop() {
     Serial.print("T:"); Serial.print(currentMillis);
     Serial.print("ms | Acc[g]:"); Serial.print(gX,1); Serial.print(","); Serial.print(gY,1); Serial.print(","); Serial.print(gZ,1);
     Serial.print(" | Mag[uT]:"); Serial.print(magX,1); Serial.print(","); Serial.print(magY,1); Serial.print(","); Serial.print(magZ,1);
-    Serial.print(" | Baro:"); Serial.print(tempC,1); Serial.print("C,"); Serial.print(pressHPa,1); Serial.print("hPa");
+    // ⚙️ 修改：在 Baro 後方新增 BaroAlt 輸出
+    Serial.print(" | Baro:"); Serial.print(tempC,1); Serial.print("C,"); Serial.print(pressHPa,1); Serial.print("hPa,Alt:"); Serial.print(baroAlt,1); Serial.print("m");
     Serial.print(" | GPS(Sats:"); Serial.print(gpsSats); Serial.print("):"); Serial.print(gpsLat,4); Serial.print(","); Serial.print(gpsLng,4);
-    Serial.print(" | Alt:"); Serial.print(gpsAlt,1); Serial.print("m | ");
+    Serial.print(" | GpsAlt:"); Serial.print(gpsAlt,1); Serial.print("m | ");
     Serial.println(gpsTimeBuf);
 
     // ==========================================
@@ -217,6 +224,7 @@ void loop() {
       // 氣壓計 (10Hz 即時值)
       dataFile.print(tempC, 2); dataFile.print(",");
       dataFile.print(pressHPa, 2); dataFile.print(",");
+      dataFile.print(baroAlt, 2); dataFile.print(","); // ⚙️ 新增：將氣壓高度寫入 CSV
       
       // GPS 數據 (10Hz 即時值)
       dataFile.print(gpsSats); dataFile.print(",");
@@ -229,4 +237,4 @@ void loop() {
       dataFile.close(); 
     }
   }
-}
+}ㄒ
