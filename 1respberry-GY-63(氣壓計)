@@ -1,14 +1,19 @@
 #include <Wire.h>
 #include <MS5611.h>
+#include <math.h> // 引入數學庫以使用 pow() 函數
 
 // 宣告 MS5611 物件 (I2C 位址 0x77)
 MS5611 ms5611(0x77);
+
+// 定義基準海平面氣壓 (單位: hPa)
+// 1013.25 是標準大氣壓，如果你知道當天當地的海平面氣壓，修改這裡會更準
+const float SEA_LEVEL_PRESSURE = 1013.25; 
 
 void setup() {
   Serial.begin(115200);
   delay(2000); // 串口穩定時間
 
-  Serial.println("--- GY-63 強制讀取測試 ---");
+  Serial.println("--- GY-63 強制讀取測試 (含高度計算) ---");
 
   // 設定 Pico 的 I2C 引腳
   Wire.setSDA(4);
@@ -16,7 +21,7 @@ void setup() {
   Wire.begin();
 
   // 初始化
-  ms5611.begin(); 
+  ms5611.begin();  
   
   Serial.println("✅ 初始化指令發送完畢，開始讀取...");
 }
@@ -29,13 +34,20 @@ void loop() {
   float temp = ms5611.getTemperature();
   float press = ms5611.getPressure();
   
+  // 計算高度 (大氣氣壓公式)
+  // 公式：44330 * (1.0 - pow(press / SEA_LEVEL_PRESSURE, 0.1903))
+  float altitude = 44330.0 * (1.0 - pow((press / SEA_LEVEL_PRESSURE), 0.1903));
+  
   // 輸出結果
   Serial.print("溫度: "); 
   Serial.print(temp, 2); 
   Serial.print(" C | ");
   Serial.print("氣壓: "); 
   Serial.print(press, 2); 
-  Serial.println(" hPa");
+  Serial.print(" hPa | ");
+  Serial.print("估算高度: "); 
+  Serial.print(altitude, 2); 
+  Serial.println(" m");
 
-  delay(500); // 每秒輸出一次
+  delay(500); // 每半秒輸出一次
 }
