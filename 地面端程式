@@ -4,16 +4,29 @@ const int BOARD_LED = 25;
 const int LORA_AUX = 2;          
 String inputBuffer = ""; 
 
+#define LORA_TX_PIN 12
+#define LORA_RX_PIN 13
+
 void setup() {
   pinMode(LORA_AUX, INPUT); 
   Serial.begin(115200); 
   delay(800); 
+  
+  // 初始化 PCB LoRa 串口
+  Serial1.setTX(LORA_TX_PIN);
+  Serial1.setRX(LORA_RX_PIN);
   Serial1.begin(9600); 
-  pinMode(BOARD_LED, OUTPUT);
+  delay(100);
+
+  // ⚡ [E220 硬體天線加速核心] 接收端同步
+  byte SPEED_CMD[] = {0xC0, 0x00, 0x03, 0x00, 0x00, 0xE4}; 
+  Serial1.write(SPEED_CMD, sizeof(SPEED_CMD));
+  delay(200);
+  
   Serial.println("==============================================");
-  Serial.println("📡 [地面接收站] \n 13欄位全數據經緯度儀表板 啟動");
+  Serial.println("📡 [PCB地面接收站] 5Hz 同步流儀表板 啟動");
   Serial.println("==============================================");
-  inputBuffer.reserve(200); 
+  inputBuffer.reserve(150); 
 }
 
 void loop() {
@@ -29,7 +42,6 @@ void loop() {
         int sats = -999;
         float lat = 0.0, lng = 0.0, alt = -999.0;
 
-        // 🎯 完美解析 13 個欄位
         int parsed = sscanf(inputBuffer.c_str(), "%lu,%f,%f,%f,%f,%f,%f,%f,%f,%d,%f,%f,%f", 
                             &rTime, &gx, &gy, &gz, &mx, &my, &mz, &temp, &press, &sats, &lat, &lng, &alt);
 
@@ -45,14 +57,14 @@ void loop() {
             Serial.print(" | Lng:"); Serial.print(lng, 6);
             Serial.print(" | Alt:"); Serial.print(alt, 1); Serial.println("m");
           } else {
-            Serial.println(" | 📡 GPS: [等待物理定位/定位失效]");
+            Serial.println(" | 📡 GPS: [等待物理定位/訊號留空]");
           }
         } else {
           Serial.print("🛰️ [原始流]: "); Serial.println(inputBuffer);
         }
       }
       inputBuffer = "";
-      digitalWrite(BOARD_LED, HIGH); delayMicroseconds(50); digitalWrite(BOARD_LED, LOW);
+      digitalWrite(BOARD_LED, HIGH); delayMicroseconds(20); digitalWrite(BOARD_LED, LOW);
     } else if (c != '\r') {
       inputBuffer += c;
     }
