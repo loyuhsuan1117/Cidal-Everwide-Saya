@@ -29,7 +29,7 @@ const int LORA_AUX = 2;
 const int BOARD_LED = 25;       
 
 // ==========================================
-// 🎯 感測器物件與常數設定
+// 🎯 感測器物件與常數設定 (🚀 三軸精密校準版)
 // ==========================================
 TinyGPSPlus gps;
 #define GPS_I2C_ADDR 0x42
@@ -39,11 +39,12 @@ Adafruit_LIS3MDL lis3mdl;
 File dataFile;
 
 const float ACTUAL_PICO_VOLTAGE = 3.30; 
-const float SENSITIVITY         = 0.300; 
 
-const float ZERO_G_VOLTAGE_X    = 0.360; 
-const float ZERO_G_VOLTAGE_Y    = 0.395; 
-const float ZERO_G_VOLTAGE_Z    = 0.120; 
+// 👇 這是經過你實際正放、倒放、直立、倒立測量，完全消除硬體誤差的專屬參數
+const float SENSITIVITY         = 0.05825; // 實測每 g 的電壓變化量
+const float ZERO_G_VOLTAGE_X    = 0.2922;  // X 軸絕對零點
+const float ZERO_G_VOLTAGE_Y    = 0.2983;  // Y 軸絕對零點
+const float ZERO_G_VOLTAGE_Z    = 0.3087;  // Z 軸絕對零點
 
 const byte SET_TO_10HZ[] = {
   0xB5, 0x62, 0x06, 0x08, 0x06, 0x00, 0x64, 0x00, 0x01, 0x00, 0x01, 0x00, 0x7A, 0x12
@@ -77,7 +78,7 @@ void setup() {
   unsigned long startWait = millis();
   while (!Serial && (millis() - startWait < 1500)); 
 
-  Serial.println("\n--- 🚀 綜合航電 (5Hz擷取/傳輸絕對同步版) 啟動 ---");
+  Serial.println("\n--- 🚀 綜合航電 (精密校準同步版) 啟動 ---");
   
   // 初始化 PCB LoRa 串口
   Serial1.setTX(LORA_TX_PIN);
@@ -161,10 +162,13 @@ void loop() {
     float vY = (sumY / 5) * (ACTUAL_PICO_VOLTAGE / 4095.0);
     float vZ = (sumZ / 5) * (ACTUAL_PICO_VOLTAGE / 4095.0);
 
-    if (vX < 0.15 || vY < 0.15 || vZ < 0.15) {
+    // 🛠️ 使用新放寬的防呆閾值 0.05
+    if (vX < 0.05 || vY < 0.05 || vZ < 0.05) {
       gX = 0.0; gY = 0.0; gZ = 0.0;
     } else {
-      gX = (vX - ZERO_G_VOLTAGE_X) / SENSITIVITY; gY = (vY - ZERO_G_VOLTAGE_Y) / SENSITIVITY; gZ = (vZ - ZERO_G_VOLTAGE_Z) / SENSITIVITY;
+      gX = (vX - ZERO_G_VOLTAGE_X) / SENSITIVITY; 
+      gY = (vY - ZERO_G_VOLTAGE_Y) / SENSITIVITY; 
+      gZ = (vZ - ZERO_G_VOLTAGE_Z) / SENSITIVITY;
     }
 
     // 2. 擷取地磁規
@@ -199,7 +203,7 @@ void loop() {
       gpsSats = -1;
     }
 
-    // 🖥️ 1. 【滿足要求】發射端本地端全數據暴噴
+    // 🖥️ 1. 發射端本地端全數據暴噴
     Serial.print("T:"); Serial.print(currentMillis);
     Serial.print("ms | Acc:"); Serial.print(gX,1); Serial.print(","); Serial.print(gY,1); Serial.print(","); Serial.print(gZ,1);
     Serial.print(" | Mag:"); Serial.print(magX,1); Serial.print(","); Serial.print(magY,1); Serial.print(","); Serial.print(magZ,1);
@@ -221,7 +225,7 @@ void loop() {
       dataFile.close(); 
     }
 
-    // 📡 3. 【滿足要求】LoRa 傳輸完全同步 5Hz 噴射
+    // 📡 3. LoRa 傳輸完全同步 5Hz 噴射
     String loraBuffer = "";
     loraBuffer += String(currentMillis) + ",";
     loraBuffer += String(gX, 1) + "," + String(gY, 1) + "," + String(gZ, 1) + ",";
