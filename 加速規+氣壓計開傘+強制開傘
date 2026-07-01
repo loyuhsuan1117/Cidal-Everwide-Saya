@@ -4,7 +4,7 @@
 #include "SparkFunLSM6DS3.h"
 #include <Adafruit_BMP3XX.h>
 
-#define DEPLOY_PIN 6
+#define DEPLOY_PIN 10
 #define LED_PIN 2
 
 LSM6DS3 lsm6(I2C_MODE, 0x6A);
