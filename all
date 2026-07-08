@@ -1,0 +1,321 @@
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <TinyGPS++.h>
+#include <MS5611.h>
+#include <Adafruit_LIS3MDL.h>
+#include <Adafruit_Sensor.h>
+#include <math.h> 
+#include <RadioLib.h> 
+
+// ==========================================
+// 🌟 硬體腳位與引腳定義 (RP2040 Pico)
+// ==========================================
+#define I2C_SDA_PIN 4
+#define I2C_SCL_PIN 5
+
+// SPI0 用於 SD 卡
+#define SD_MISO_PIN 16
+#define SD_MOSI_PIN 19
+#define SD_SCK_PIN  18
+#define SD_CS_PIN   17
+const int chipSelect = SD_CS_PIN;
+
+const int BOARD_LED = 25;
+
+// 🎯 Ra-01SH 終極硬體腳位
+#define LORA_NSS  13
+#define LORA_MOSI 15
+#define LORA_MISO 12
+#define LORA_SCK  14
+#define LORA_RST  10
+#define LORA_BSY  2
+#define LORA_D1   3
+#define LORA_RXE  7
+#define LORA_TXE  6
+
+// ==========================================
+// 🎯 感測器硬體暫存器與位址定義 (BMI160)
+// ==========================================
+#define BMI160_I2C_ADDR       0x68
+#define BMI160_REG_CHIPID     0x00
+#define BMI160_REG_ACC_DATA   0x12 
+#define BMI160_REG_CMD        0x7E
+
+TinyGPSPlus gps;
+#define GPS_I2C_ADDR 0x42
+
+MS5611 ms5611(0x77);
+Adafruit_LIS3MDL lis3mdl;
+
+File dataFile;
+
+bool bmi160_Ready = false;
+bool lis3mdl_Ready = false;
+bool sd_Ready = false;
+bool lora_Ready = false;
+
+const float SEA_LEVEL_PRESSURE = 1013.25; 
+
+const byte SET_TO_10HZ[] = {
+  0xB5, 0x62, 0x06, 0x08, 0x06, 0x00, 0x64, 0x00, 0x01, 0x00, 0x01, 0x00, 0x7A, 0x12
+};
+
+// 🎯 使用自訂的 SPI1 初始化 Ra-01SH
+SPIClassRP2040 LORA_SPI(spi1, LORA_MISO, LORA_NSS, LORA_SCK, LORA_MOSI);
+LLCC68 radio = new Module(LORA_NSS, LORA_D1, LORA_RST, LORA_BSY, LORA_SPI);
+
+// ==========================================
+// ⏱️ 時間排程時間軸
+// ==========================================
+unsigned long lastAccelLog = 0; // 100Hz (10ms)
+unsigned long lastMagLog   = 0; // 20Hz  (50ms)
+unsigned long lastSlowLog  = 0; // 10Hz  (100ms)
+
+float gX = 0, gY = 0, gZ = 0;
+float magX = 0, magY = 0, magZ = 0;
+float tempC = 0, pressHPa = 0, baroAlt = 0; 
+int gpsSats = 0;
+float gpsLat = 0.0, gpsLng = 0.0, gpsAlt = 0.0;
+char gpsTimeBuf[16] = "00:00:00.00";
+
+// ==========================================
+// 🧠 原生 I2C 讀寫底層函式
+// ==========================================
+void bmi160_WriteReg(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(BMI160_I2C_ADDR);
+  Wire.write(reg);
+  Wire.write(val);
+  Wire.endTransmission();
+}
+
+uint8_t bmi160_ReadReg(uint8_t reg) {
+  Wire.beginTransmission(BMI160_I2C_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission() != 0) return 0xFF;
+  
+  Wire.requestFrom((uint8_t)BMI160_I2C_ADDR, (uint8_t)1);
+  if (Wire.available()) return Wire.read();
+  return 0xFF;
+}
+
+bool initBMI160_Direct() {
+  uint8_t id = bmi160_ReadReg(BMI160_REG_CHIPID);
+  if (id != 0xD1) return false; 
+  
+  bmi160_WriteReg(BMI160_REG_CMD, 0x11); 
+  delay(50); 
+  bmi160_WriteReg(0x41, 0x03);           
+  delay(10);
+  return true;
+}
+
+void setup() {
+  pinMode(BOARD_LED, OUTPUT);
+  pinMode(LORA_TXE, OUTPUT);
+  pinMode(LORA_RXE, OUTPUT);
+  digitalWrite(LORA_TXE, LOW);
+  digitalWrite(LORA_RXE, LOW);
+
+  Serial.begin(115200);
+  
+  // 💡 強制讓 Pico 等你開電腦 Serial Monitor（可避免漏掉開機訊息）
+  // 如果要脫機（不接電腦）射火箭，要把下面這行註解掉，否則不接電腦它不會開機
+  while (!Serial) delay(10); 
+
+  Serial.println("\n=============================================");
+  Serial.println("🚀 [航電大腦] 綜合黑盒子【發射端調試版】啟動");
+  Serial.println("=============================================");
+
+  // 1. 初始化 I2C0 總線 (穩定 100kHz)
+  Wire.setSDA(I2C_SDA_PIN);
+  Wire.setSCL(I2C_SCL_PIN);
+  Wire.begin(); 
+  Wire.setClock(100000); 
+  Wire.setTimeout(20);   
+
+  Wire.beginTransmission(GPS_I2C_ADDR);
+  Wire.write(SET_TO_10HZ, sizeof(SET_TO_10HZ));
+  Wire.endTransmission();
+
+  ms5611.begin(); 
+  Serial.println(">> [氣壓計] MS5611 配置完畢");
+
+  if (!lis3mdl.begin_I2C(0x1C, &Wire)) {          
+    Serial.println("⚠️ [提示] 找不到 LIS3MDL 地磁規。");
+    lis3mdl_Ready = false;
+  } else {
+    lis3mdl.setPerformanceMode(LIS3MDL_ULTRAHIGHMODE);
+    lis3mdl.setOperationMode(LIS3MDL_CONTINUOUSMODE);
+    lis3mdl.setRange(LIS3MDL_RANGE_4_GAUSS);
+    Serial.println(">> [地磁規] LIS3MDL 初始化成功！");
+    lis3mdl_Ready = true;
+  }
+
+  if (!initBMI160_Direct()) {
+    Serial.println("❌ [錯誤] BMI160 原生交握失敗！");
+    bmi160_Ready = false;
+  } else {
+    Serial.println(">> [加速規] BMI160 原生硬體初始化成功！");
+    bmi160_Ready = true;
+  }
+
+  // 2. 初始化 SD 卡 (SPI0)
+  SPI.setRX(SD_MISO_PIN);
+  SPI.setTX(SD_MOSI_PIN);
+  SPI.setSCK(SD_SCK_PIN);
+  
+  if (!SD.begin(chipSelect)) {
+    Serial.println("❌ [SD卡] 初始化失敗。");
+    sd_Ready = false;
+  } else {
+    Serial.println("✅ [SD卡] 初始化成功。");
+    sd_Ready = true;
+    dataFile = SD.open("redun.csv", FILE_WRITE);
+    if (dataFile) {
+      dataFile.println("Runtime(ms),gX,gY,gZ,magX(uT),magY(uT),magZ(uT),Temp(C),Press(hPa),BaroAlt(m),Sats,Lat,Lng,GpsAlt(m),GPSTime(UTC)");
+      dataFile.close();
+    }
+  }
+
+  // 3. 初始化 Ra-01SH (LLCC68) (SPI1)
+  Serial.print(F(">> [無線電] 正在初始化 Ra-01SH (LLCC68)... "));
+  LORA_SPI.begin(); 
+  
+  int state = radio.begin(915.0, 125.0, 9, 7);
+  if (state == RADIOLIB_ERR_NONE) {
+    Serial.println(F("✅ 成功！"));
+    lora_Ready = true;
+    radio.setOutputPower(22); 
+  } else {
+    Serial.print(F("❌ 失敗，錯誤代碼："));
+    Serial.println(state);
+  }
+
+  Serial.println("--- 🛰️ 系統配置結束，進入核心即時輪詢 ---\n");
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  // GPS 接收流
+  Wire.requestFrom(GPS_I2C_ADDR, 32);
+  while (Wire.available()) {
+    char c = Wire.read();
+    if (c != (char)0xFF) gps.encode(c);
+  }
+
+  // ==========================================
+  // 🕒 任務 1：100Hz (每 10ms) BMI160 原生直讀
+  // ==========================================
+  if (currentMillis - lastAccelLog >= 10) {
+    lastAccelLog = currentMillis;
+
+    if (bmi160_Ready) {
+      Wire.beginTransmission(BMI160_I2C_ADDR);
+      Wire.write(BMI160_REG_ACC_DATA); 
+      
+      if (Wire.endTransmission() == 0) {
+        Wire.requestFrom((uint8_t)BMI160_I2C_ADDR, (uint8_t)6);
+        if (Wire.available() >= 6) {
+          int16_t rawX = (int16_t)(Wire.read() | (Wire.read() << 8));
+          int16_t rawY = (int16_t)(Wire.read() | (Wire.read() << 8));
+          int16_t rawZ = (int16_t)(Wire.read() | (Wire.read() << 8));
+          
+          gX = rawX / 16384.0;
+          gY = rawY / 16384.0;
+          gZ = rawZ / 16384.0;
+        }
+      }
+    }
+  }
+
+  // ==========================================
+  // 🕒 任務 2：20Hz (每 50ms) 地磁規採樣
+  // ==========================================
+  if (currentMillis - lastMagLog >= 50) {
+    lastMagLog = currentMillis;
+
+    if (lis3mdl_Ready) {
+      sensors_event_t event; 
+      lis3mdl.getEvent(&event);
+      magX = event.magnetic.x;
+      magY = event.magnetic.y;
+      magZ = event.magnetic.z;
+    } else {
+      magX = 0.0; magY = 0.0; magZ = 0.0;
+    }
+  }
+
+  // ==========================================
+  // 🕒 任務 3：10Hz (每 100ms) 慢速感測器、儲存與無線電噴發
+  // ==========================================
+  if (currentMillis - lastSlowLog >= 100) {
+    lastSlowLog = currentMillis;
+
+    ms5611.read();
+    tempC = ms5611.getTemperature();                             
+    pressHPa = ms5611.getPressure();                             
+    baroAlt = 44330.0 * (1.0 - pow((pressHPa / SEA_LEVEL_PRESSURE), 0.1903)); 
+
+    gpsSats = gps.satellites.value();
+    if (gps.location.isValid()) {
+      gpsLat = gps.location.lat();
+      gpsLng = gps.location.lng();
+      gpsAlt = gps.altitude.meters();
+      sprintf(gpsTimeBuf, "%02d:%02d:%02d.%02d", gps.time.hour(), gps.time.minute(), gps.time.second(), gps.time.centisecond());
+    } else {
+      gpsLat = 0.0; gpsLng = 0.0; gpsAlt = 0.0;
+      strcpy(gpsTimeBuf, "SEARCHING");
+    }
+
+    // 🖥️ 🎯 【重要修正】把刪掉的本機 Serial.print 還給你！
+    Serial.println(F("---------------------------------------------"));
+    Serial.print(F("[本機調試] 時間: ")); Serial.print(currentMillis); Serial.println(F(" ms"));
+    Serial.print(F("📐 加速計: ")); Serial.print(gX,3); Serial.print(F(", ")); Serial.print(gY,3); Serial.print(F(", ")); Serial.println(gZ,3);
+    Serial.print(F("🧲 地磁計: ")); Serial.print(magX,1); Serial.print(F(", ")); Serial.print(magY,1); Serial.print(F(", ")); Serial.println(magZ,1);
+    Serial.print(F("🎈 氣壓: ")); Serial.print(pressHPa,1); Serial.print(F(" hPa | 高度: ")); Serial.print(baroAlt,1); Serial.println(F(" m"));
+    Serial.print(F("🛰️ GPS: 衛星=")); Serial.print(gpsSats); Serial.print(F(" | 座標: ")); Serial.print(gpsLat,6); Serial.print(F(", ")); Serial.print(gpsLng,6); Serial.print(F(" | 高度: ")); Serial.println(gpsAlt,1);
+
+    // 💾 SD 卡 CSV 完整存檔
+    if (sd_Ready) {
+      dataFile = SD.open("redun.csv", FILE_WRITE);
+      if (dataFile) {
+        dataFile.print(currentMillis); dataFile.print(",");
+        dataFile.print(gX, 4); dataFile.print(",");
+        dataFile.print(gY, 4); dataFile.print(",");
+        dataFile.print(gZ, 4); dataFile.print(",");
+        dataFile.print(magX, 2); dataFile.print(",");
+        dataFile.print(magY, 2); dataFile.print(",");
+        dataFile.print(magZ, 2); dataFile.print(",");
+        dataFile.print(tempC, 2); dataFile.print(",");
+        dataFile.print(pressHPa, 2); dataFile.print(","); 
+        dataFile.print(baroAlt, 2); dataFile.print(","); 
+        dataFile.print(gpsSats); dataFile.print(",");
+        dataFile.print(gpsLat, 6); dataFile.print(",");
+        dataFile.print(gpsLng, 6); dataFile.print(",");
+        dataFile.print(gpsAlt, 1); dataFile.print(",");
+        dataFile.println(gpsTimeBuf); 
+        dataFile.close(); 
+      }
+    }
+
+    // 📡 無線電遠程數據包噴發
+    if (lora_Ready) {
+      String telePacket = String(currentMillis) + "," + 
+                          String(gX, 3) + "," + String(gY, 3) + "," + String(gZ, 3) + "," + 
+                          String(magX, 1) + "," + String(magY, 1) + "," + String(magZ, 1) + "," + 
+                          String(pressHPa, 1) + "," + String(baroAlt, 1) + "," + 
+                          String(gpsSats) + "," + String(gpsLat, 6) + "," + String(gpsLng, 6) + "," + String(gpsAlt, 1);
+      
+      digitalWrite(LORA_RXE, LOW);
+      digitalWrite(LORA_TXE, HIGH);
+      
+      radio.transmit(telePacket);
+      
+      digitalWrite(LORA_TXE, LOW);
+    }
+
+    digitalWrite(BOARD_LED, HIGH); delayMicroseconds(100); digitalWrite(BOARD_LED, LOW);
+  }
+}
