@@ -1,0 +1,209 @@
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP3XX.h>
+#include <Adafruit_LSM9DS1.h>
+#include <TinyGPS++.h>
+#include "SparkFunLSM6DS3.h"
+#include <LoRa.h> 
+#include <esp_task_wdt.h> // 引入 ESP32 新版硬體看門狗
+
+// ===== 引腳定義 =====
+#define SD_CS      15
+#define SD_SCK     14
+#define SD_MISO    12
+#define SD_MOSI    13
+#define LORA_CS      2
+#define LORA_RST     0
+#define LORA_DIO0    35
+#define RXD2 4
+#define TXD2 5
+
+#define WDT_TIMEOUT 2 // 看門狗超時時間 (2秒)
+
+Adafruit_BMP3XX bmp;
+LSM6DS3 lsm6(I2C_MODE, 0x6A);      
+Adafruit_LSM9DS1 lsm9 = Adafruit_LSM9DS1(); 
+TinyGPSPlus gps;
+HardwareSerial neogps(2);
+File dataFile;
+
+const char* filename = "/super_blackbox.csv";
+unsigned long logCount = 0; 
+unsigned long lastGpsPulse = 0;
+
+// 感測器狀態記錄
+bool bmpAlive = false;
+bool lsm6Alive = false;
+bool lsm9Alive = false;
+
+void setup() {
+  Serial.begin(115200);
+  delay(2000); 
+
+  Serial.println("\n--- 系統啟動：火箭終極硬體防死鎖安全版 ---");
+
+  // 1. 初始化看門狗 (Core 3.x 結構體配置)
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = WDT_TIMEOUT * 1000,
+    .idle_core_mask = 0,
+    .trigger_panic = true
+  };
+  esp_task_wdt_init(&wdt_config);
+  esp_task_wdt_add(NULL);
+
+  // 2. 開啟 I2C 並設定硬體超時
+  Wire.begin(8, 9);
+  Wire.setTimeOut(25); 
+
+  neogps.begin(38400, SERIAL_8N1, RXD2, TXD2);
+
+  // 3. 唯一次初始化
+  if (bmp.begin_I2C()) { bmpAlive = true; } else { Serial.println("⚠️ BMP390 失敗"); }
+  if (lsm6.begin() == 0) { lsm6Alive = true; } else { Serial.println("⚠️ LSM6DS3 失敗"); }
+  if (lsm9.begin()) { 
+    lsm9Alive = true; 
+    lsm9.setupMag(lsm9.LSM9DS1_MAGGAIN_4GAUSS);
+  } else { Serial.println("⚠️ LSM9DS1 失敗"); }
+
+  // 4. SPI 與 SD 卡初始化
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  if (!SD.begin(SD_CS, SPI, 1000000)) {
+    Serial.println("❌ SD 失敗");
+  } else {
+    if (!SD.exists(filename)) {
+      dataFile = SD.open(filename, FILE_WRITE);
+      if (dataFile) {
+        dataFile.println("Count,Lat,Lng,Alt_m,Sats,Temp_C,Press_hPa,AccX,AccY,AccZ,GyroX,GyroY,GyroZ,MagX,MagY,MagZ");
+        dataFile.close();
+      }
+    }
+    Serial.println("✅ SD 準備就緒");
+  }
+
+  // 5. LoRa 初始化
+  LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
+  // 【修改點】調整頻率為 434.5MHz 避開干擾
+  if (!LoRa.begin(434.5E6)) {
+    Serial.println("❌ LoRa 失敗");
+  } else {
+    // 【修改點】新增專屬同步字 0x6B，硬體層面過濾它組訊號
+    LoRa.setSyncWord(0x6B); 
+    LoRa.setTxPower(20); 
+    Serial.println("✅ LoRa 成功");
+  }
+}
+
+void loop() {
+  esp_task_wdt_reset(); // 餵狗
+
+  while (neogps.available() > 0) {
+    gps.encode(neogps.read());
+    lastGpsPulse = millis();
+  }
+
+  static unsigned long lastLog = 0;
+  if (millis() - lastLog >= 500) {
+    lastLog = millis();
+    logAndDisplayAllData();
+  }
+}
+
+void logAndDisplayAllData() {
+  logCount++;
+
+  // 數值初始歸零
+  float temp = 0, press = 0, bmp_alt = 0;
+  float ax = 0, ay = 0, az = 0;
+  float gx = 0, gy = 0, gz = 0;
+  float mx = 0, my = 0, mz = 0;
+  double lat = 0, lng = 0, alt = 0;
+  int sats = 0;
+
+  // 讀取 BMP390 並換算海平面高度
+  if (bmpAlive) {
+    if (bmp.performReading()) {
+      temp = bmp.temperature;
+      press = bmp.pressure / 100.0;
+      bmp_alt = 44330.0 * (1.0 - pow(press / 1013.25, 0.1903));
+    }
+  }
+
+  // 讀取 LSM6DS3
+  if (lsm6Alive) { 
+    ax = lsm6.readFloatAccelX();
+    ay = lsm6.readFloatAccelY();
+    az = lsm6.readFloatAccelZ();
+    gx = lsm6.readFloatGyroX();
+    gy = lsm6.readFloatGyroY();
+    gz = lsm6.readFloatGyroZ();
+  } 
+
+  // 讀取 LSM9DS1
+  if (lsm9Alive) { 
+    sensors_event_t a, m, g, t;
+    lsm9.getEvent(&a, &m, &g, &t);
+    mx = m.magnetic.x;
+    my = m.magnetic.y;
+    mz = m.magnetic.z;
+  }
+
+  // GPS 數據與逾時檢查
+  if (gps.location.isValid() && (millis() - lastGpsPulse < 1500)) {
+    lat = gps.location.lat();
+    lng = gps.location.lng();
+    alt = gps.altitude.meters();
+    sats = gps.satellites.value();
+  }
+
+  // --- 修正後的 LoRa 報表字串 (把所有數據用精簡代號打包上傳) ---
+  String loraMsg = "C:" + String(logCount);
+  loraMsg += ",GPS:" + String(lat, 4) + "/" + String(lng, 4) + "/" + String(alt, 0);
+  loraMsg += ",Sat:" + String(sats);
+  loraMsg += ",ENV:" + String(press, 1) + "/" + String(temp, 1) + "/" + String(bmp_alt, 1); // 氣壓/溫度/高度
+  loraMsg += ",Acc:" + String(ax, 1) + "/" + String(ay, 1) + "/" + String(az, 1);          // 加速度三軸
+  loraMsg += ",Gyr:" + String(gx, 1) + "/" + String(gy, 1) + "/" + String(gz, 1);          // 陀螺儀三軸
+  loraMsg += ",Mag:" + String(mx, 0) + "/" + String(my, 0) + "/" + String(mz, 0);          // 地磁計三軸
+
+  // --- Serial Monitor 一目瞭然排版 ---
+  Serial.println("========================================");
+  Serial.print("第 "); Serial.print(logCount); Serial.println(" 次數據紀錄：");
+  Serial.print("📍 GPS: "); Serial.print(lat, 6); Serial.print(", "); Serial.print(lng, 6); Serial.print(" | Sat: "); Serial.print(sats);
+  Serial.print(" | ☁️ 環境: "); Serial.print(press); Serial.print(" hPa | "); Serial.print(temp); Serial.print(" C | 🏔️ 高度: "); Serial.print(bmp_alt, 2); Serial.println(" m");
+  Serial.print("🏃 加速度: "); Serial.print(ax, 2); Serial.print(", "); Serial.print(ay, 2); Serial.print(", "); Serial.print(az, 2);
+  Serial.print(" | 🧲 磁力計: "); Serial.print(mx, 2); Serial.print(", "); Serial.print(my, 2); Serial.println(mz, 2);
+
+  // SD 卡寫入 (CSV 完整數據保留)
+  dataFile = SD.open(filename, FILE_APPEND);
+  if (dataFile) {
+    dataFile.print(logCount); dataFile.print(",");
+    dataFile.print(lat, 6); dataFile.print(",");
+    dataFile.print(lng, 6); dataFile.print(",");
+    dataFile.print(alt, 1); dataFile.print(",");
+    dataFile.print(sats); dataFile.print(",");
+    dataFile.print(temp, 2); dataFile.print(",");
+    dataFile.print(press, 2); dataFile.print(",");
+    dataFile.print(ax, 4); dataFile.print(",");
+    dataFile.print(ay, 4); dataFile.print(",");
+    dataFile.print(az, 4); dataFile.print(",");
+    dataFile.print(gx, 4); dataFile.print(",");
+    dataFile.print(gy, 4); dataFile.print(",");
+    dataFile.print(gz, 4); dataFile.print(",");
+    dataFile.print(mx, 4); dataFile.print(",");
+    dataFile.print(my, 4); dataFile.println(mz, 4); 
+    dataFile.close();
+    Serial.print("💾 SD: OK | ");
+  } else {
+    Serial.print("💾 SD: FAIL | ");
+  }
+
+  // LoRa 發射
+  if (LoRa.beginPacket()) {
+    LoRa.print(loraMsg);
+    LoRa.endPacket(); 
+    Serial.println("📡 LoRa: OK");
+  } else {
+    Serial.println("📡 LoRa: BUSY");
+  }
+}
