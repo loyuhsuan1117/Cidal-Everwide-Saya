@@ -119,12 +119,11 @@ void setup() {
 
   Serial.begin(115200);
   
-  // 💡 強制讓 Pico 等你開電腦 Serial Monitor（可避免漏掉開機訊息）
-  // 如果要脫機（不接電腦）射火箭，要把下面這行註解掉，否則不接電腦它不會開機
+  // 💡 強制讓 Pico 等你開電腦 Serial Monitor（如果要脫機發射，請註解掉這行）
   while (!Serial) delay(10); 
 
   Serial.println("\n=============================================");
-  Serial.println("🚀 [航電大腦] 綜合黑盒子【發射端調試版】啟動");
+  Serial.println("🚀 [航電大腦] 綜合黑盒子【發射端最終修正版】啟動");
   Serial.println("=============================================");
 
   // 1. 初始化 I2C0 總線 (穩定 100kHz)
@@ -160,16 +159,22 @@ void setup() {
     bmi160_Ready = true;
   }
 
-  // 2. 初始化 SD 卡 (SPI0)
-  SPI.setRX(SD_MISO_PIN);
+  // ==========================================
+  // 🎯 2. 初始化 SD 卡 (自訂 SPI0 引腳修正版)
+  // ==========================================
   SPI.setTX(SD_MOSI_PIN);
+  SPI.setRX(SD_MISO_PIN);
   SPI.setSCK(SD_SCK_PIN);
   
+  // 🛠️ 強制初始化硬體暫存器組合
+  SPI.begin(); 
+
+  Serial.print(F(">> [SD卡] 正在嘗試初始化 SD 卡... "));
   if (!SD.begin(chipSelect)) {
-    Serial.println("❌ [SD卡] 初始化失敗。");
+    Serial.println("❌ 失敗！找不到卡片。");
     sd_Ready = false;
   } else {
-    Serial.println("✅ [SD卡] 初始化成功。");
+    Serial.println("✅ 成功！");
     sd_Ready = true;
     dataFile = SD.open("redun.csv", FILE_WRITE);
     if (dataFile) {
@@ -269,7 +274,7 @@ void loop() {
       strcpy(gpsTimeBuf, "SEARCHING");
     }
 
-    // 🖥️ 🎯 【重要修正】把刪掉的本機 Serial.print 還給你！
+    // 🖥️ 本機序列埠同步噴發（含全部感測器欄位）
     Serial.println(F("---------------------------------------------"));
     Serial.print(F("[本機調試] 時間: ")); Serial.print(currentMillis); Serial.println(F(" ms"));
     Serial.print(F("📐 加速計: ")); Serial.print(gX,3); Serial.print(F(", ")); Serial.print(gY,3); Serial.print(F(", ")); Serial.println(gZ,3);
