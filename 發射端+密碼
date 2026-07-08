@@ -84,11 +84,10 @@ void setup() {
 
   // 5. LoRa 初始化
   LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
-  // 【修改點】調整頻率為 434.5MHz 避開干擾
+  // 設定頻率為 434.5MHz
   if (!LoRa.begin(434.5E6)) {
     Serial.println("❌ LoRa 失敗");
   } else {
-    // 【修改點】新增專屬同步字 0x6B，硬體層面過濾它組訊號
     LoRa.setSyncWord(0x6B); 
     LoRa.setTxPower(20); 
     Serial.println("✅ LoRa 成功");
@@ -157,14 +156,14 @@ void logAndDisplayAllData() {
     sats = gps.satellites.value();
   }
 
-  // --- 修正後的 LoRa 報表字串 (把所有數據用精簡代號打包上傳) ---
-  String loraMsg = "C:" + String(logCount);
+  // --- 【修改點】在傳輸字串開頭加上專屬識別密碼：#SUPER_BBOX# ---
+  String loraMsg = "#SUPER_BBOX#C:" + String(logCount);
   loraMsg += ",GPS:" + String(lat, 4) + "/" + String(lng, 4) + "/" + String(alt, 0);
   loraMsg += ",Sat:" + String(sats);
-  loraMsg += ",ENV:" + String(press, 1) + "/" + String(temp, 1) + "/" + String(bmp_alt, 1); // 氣壓/溫度/高度
-  loraMsg += ",Acc:" + String(ax, 1) + "/" + String(ay, 1) + "/" + String(az, 1);          // 加速度三軸
-  loraMsg += ",Gyr:" + String(gx, 1) + "/" + String(gy, 1) + "/" + String(gz, 1);          // 陀螺儀三軸
-  loraMsg += ",Mag:" + String(mx, 0) + "/" + String(my, 0) + "/" + String(mz, 0);          // 地磁計三軸
+  loraMsg += ",ENV:" + String(press, 1) + "/" + String(temp, 1) + "/" + String(bmp_alt, 1); 
+  loraMsg += ",Acc:" + String(ax, 1) + "/" + String(ay, 1) + "/" + String(az, 1);          
+  loraMsg += ",Gyr:" + String(gx, 1) + "/" + String(gy, 1) + "/" + String(gz, 1);          
+  loraMsg += ",Mag:" + String(mx, 0) + "/" + String(my, 0) + "/" + String(mz, 0);          
 
   // --- Serial Monitor 一目瞭然排版 ---
   Serial.println("========================================");
@@ -174,7 +173,7 @@ void logAndDisplayAllData() {
   Serial.print("🏃 加速度: "); Serial.print(ax, 2); Serial.print(", "); Serial.print(ay, 2); Serial.print(", "); Serial.print(az, 2);
   Serial.print(" | 🧲 磁力計: "); Serial.print(mx, 2); Serial.print(", "); Serial.print(my, 2); Serial.println(mz, 2);
 
-  // SD 卡寫入 (CSV 完整數據保留)
+  // SD 卡寫入
   dataFile = SD.open(filename, FILE_APPEND);
   if (dataFile) {
     dataFile.print(logCount); dataFile.print(",");
