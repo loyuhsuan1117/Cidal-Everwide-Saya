@@ -120,7 +120,7 @@ void setup() {
   Serial.begin(115200);
   
   // 💡 強制讓 Pico 等你開電腦 Serial Monitor（如果要脫機發射，請註解掉這行）
-  while (!Serial) delay(10); 
+  //while (!Serial) delay(10); 
 
   Serial.println("\n=============================================");
   Serial.println("🚀 [航電大腦] 綜合黑盒子【發射端最終修正版】啟動");
