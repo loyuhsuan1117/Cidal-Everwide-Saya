@@ -1,0 +1,127 @@
+#include <RadioLib.h>
+
+// 🎯 地面接收站腳位配置（與你的發射端完全相同）
+#define LORA_NSS  13
+#define LORA_MOSI 15
+#define LORA_MISO 12
+#define LORA_SCK  14
+#define LORA_RST  10
+#define LORA_BSY  2
+#define LORA_D1   3
+#define LORA_RXE  7
+#define LORA_TXE  6
+
+SPIClassRP2040 LORA_SPI(spi1, LORA_MISO, LORA_NSS, LORA_SCK, LORA_MOSI);
+LLCC68 radio = new Module(LORA_NSS, LORA_D1, LORA_RST, LORA_BSY, LORA_SPI);
+
+void setup() {
+  pinMode(LORA_TXE, OUTPUT);
+  pinMode(LORA_RXE, OUTPUT);
+  digitalWrite(LORA_TXE, LOW);
+  digitalWrite(LORA_RXE, LOW);
+
+  // ⚠️ 鮑率與 Python 保持一致 (此處設 57600，如果是 115200 也可以，請確保 Python 那邊一致即可)
+  Serial.begin(57600); 
+
+  LORA_SPI.begin();
+  
+  // 必須與發射端參數完全一致：915.0MHz, 125kHz, SF9
+  int state = radio.begin(915.0, 125.0, 9, 7);
+  if (state == RADIOLIB_ERR_NONE) {
+    radio.setSyncWord(0x34); 
+  } else {
+    while (true); // 初始化失敗則停機
+  }
+
+  // 射頻開關控制：地面站長駐接收模式（RXE拉高，TXE拉低）
+  digitalWrite(LORA_TXE, LOW);
+  digitalWrite(LORA_RXE, HIGH);
+}
+
+void loop() {
+  String receivedStr;
+  
+  // 檢查是否有無線電封包進來
+  int state = radio.receive(receivedStr);
+
+  if (state == RADIOLIB_ERR_NONE) {
+    
+    // 檢查密碼標頭，確認為我方冗餘封包
+    if (receivedStr.startsWith("#REDUN_BBOX#")) {
+      
+      // 切掉標頭，留下純數據
+      String realData = receivedStr.substring(12);
+
+      // 尋找字串中的所有逗號進行欄位切分
+      int commaIndex[12];
+      int count = 0;
+      for (int i = 0; i < realData.length(); i++) {
+        if (realData.charAt(i) == ',') {
+          if (count < 12) {
+            commaIndex[count] = i;
+            count++;
+          }
+        }
+      }
+
+      // 如果剛好算到 12 個逗號（代表 13 個發射端欄位完整無缺）
+      if (count == 12) {
+        // 拆解發射端透過 LoRa 傳過來的原始數據
+        // 發射端封包格式：Runtime(ms), gX, gY, gZ, magX, magY, magZ, pressHPa, baroAlt, gpsSats, gpsLat, gpsLng, gpsAlt
+        String ms       = realData.substring(0, commaIndex[0]);
+        String ax       = realData.substring(commaIndex[0]+1, commaIndex[1]);
+        String ay       = realData.substring(commaIndex[1]+1, commaIndex[2]);
+        String az       = realData.substring(commaIndex[2]+1, commaIndex[3]);
+        String mx       = realData.substring(commaIndex[3]+1, commaIndex[4]);
+        String my       = realData.substring(commaIndex[4]+1, commaIndex[5]);
+        String mz       = realData.substring(commaIndex[5]+1, commaIndex[6]);
+        String press    = realData.substring(commaIndex[6]+1, commaIndex[7]);
+        String alt      = realData.substring(commaIndex[7]+1, commaIndex[8]);
+        String sats     = realData.substring(commaIndex[8]+1, commaIndex[9]);
+        String lat      = realData.substring(commaIndex[9]+1, commaIndex[10]);
+        String lng      = realData.substring(commaIndex[10]+1, commaIndex[11]);
+        String gps_alt  = realData.substring(commaIndex[11]+1);
+
+        // --- ⚙️ 資料加工與轉化 ---
+        
+        // 1. 計算 Orientation (Yaw)
+        float f_mx = mx.toFloat();
+        float f_my = my.toFloat();
+        float orient = atan2(f_my, f_mx) * 180.0 / M_PI;
+
+        // 2. 估算發射端當前的 GPS 時間 (若無線電未傳送時間，則用地面站當前 millis 模擬)
+        unsigned long currentSec = millis() / 1000;
+        int gpsHour = (currentSec / 3600) % 24;
+        int gpsMin = (currentSec % 3600) / 60;
+        int gpsSec = currentSec % 60;
+
+        // 3. 模擬 GPS 速度與地面 SD 狀態
+        float gpsSpeed = 0.0; // LoRa 封包未包含速度，此處預設為 0
+        String sdStatus = "1"; // 地面站直接預設給予正常訊號
+
+        // 4. 估算溫度 (若沒收到，給予常溫 25.0)
+        float tempC = 25.0;
+
+        // ==========================================
+        // 🖥️ 【關鍵：100% 契合 Python 地面站的 16 欄位 CSV 輸出】
+        // ==========================================
+        Serial.print(tempC, 1);       Serial.print(","); // 1. Temp
+        Serial.print(orient, 2);      Serial.print(","); // 2. Orient
+        Serial.print(press);          Serial.print(","); // 3. Pressure
+        Serial.print(alt);            Serial.print(","); // 4. Altitude
+        Serial.print(ax);             Serial.print(","); // 5. Acc X
+        Serial.print(ay);             Serial.print(","); // 6. Acc Y
+        Serial.print(az);             Serial.print(","); // 7. Acc Z
+        Serial.print(sdStatus);       Serial.print(","); // 8. SD Status
+        Serial.print(lng);            Serial.print(","); // 9. Lon
+        Serial.print(lat);            Serial.print(","); // 10. Lat
+        Serial.print(gps_alt);        Serial.print(","); // 11. GPS Alt
+        Serial.print(gpsSpeed, 1);    Serial.print(","); // 12. GPS Speed
+        Serial.print(sats);           Serial.print(","); // 13. GPS Sats
+        Serial.print(gpsHour);        Serial.print(","); // 14. Hour
+        Serial.print(gpsMin);         Serial.print(","); // 15. Minute
+        Serial.println(gpsSec);                          // 16. Second (換行)
+      }
+    }
+  }
+}
