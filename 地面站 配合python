@@ -1,6 +1,6 @@
 #include <RadioLib.h>
 
-// 🎯 地面接收站腳位配置（與你的發射端完全相同）
+// 🎯 地面接收站腳位配置
 #define LORA_NSS  13
 #define LORA_MOSI 15
 #define LORA_MISO 12
@@ -20,8 +20,8 @@ void setup() {
   digitalWrite(LORA_TXE, LOW);
   digitalWrite(LORA_RXE, LOW);
 
-  // ⚠️ 鮑率與 Python 保持一致 (此處設 57600，如果是 115200 也可以，請確保 Python 那邊一致即可)
-  Serial.begin(57600); 
+  // ⚡ 鮑率改回你原本的 115200 確保相容性！
+  Serial.begin(115200); 
 
   LORA_SPI.begin();
   
@@ -29,8 +29,11 @@ void setup() {
   int state = radio.begin(915.0, 125.0, 9, 7);
   if (state == RADIOLIB_ERR_NONE) {
     radio.setSyncWord(0x34); 
+    Serial.println(F("[SYSTEM] 地面站 Lora 初始化成功！持續監聽中..."));
   } else {
-    while (true); // 初始化失敗則停機
+    Serial.print(F("[SYSTEM] Lora 初始化失敗，代碼: "));
+    Serial.println(state);
+    while (true); 
   }
 
   // 射頻開關控制：地面站長駐接收模式（RXE拉高，TXE拉低）
@@ -46,7 +49,7 @@ void loop() {
 
   if (state == RADIOLIB_ERR_NONE) {
     
-    // 檢查密碼標頭，確認為我方冗餘封包
+    // 檢查密碼標頭
     if (receivedStr.startsWith("#REDUN_BBOX#")) {
       
       // 切掉標頭，留下純數據
@@ -64,10 +67,9 @@ void loop() {
         }
       }
 
-      // 如果剛好算到 12 個逗號（代表 13 個發射端欄位完整無缺）
+      // 如果 13 個發射端欄位完整無缺
       if (count == 12) {
         // 拆解發射端透過 LoRa 傳過來的原始數據
-        // 發射端封包格式：Runtime(ms), gX, gY, gZ, magX, magY, magZ, pressHPa, baroAlt, gpsSats, gpsLat, gpsLng, gpsAlt
         String ms       = realData.substring(0, commaIndex[0]);
         String ax       = realData.substring(commaIndex[0]+1, commaIndex[1]);
         String ay       = realData.substring(commaIndex[1]+1, commaIndex[2]);
@@ -83,27 +85,25 @@ void loop() {
         String gps_alt  = realData.substring(commaIndex[11]+1);
 
         // --- ⚙️ 資料加工與轉化 ---
-        
-        // 1. 計算 Orientation (Yaw)
         float f_mx = mx.toFloat();
         float f_my = my.toFloat();
         float orient = atan2(f_my, f_mx) * 180.0 / M_PI;
 
-        // 2. 估算發射端當前的 GPS 時間 (若無線電未傳送時間，則用地面站當前 millis 模擬)
         unsigned long currentSec = millis() / 1000;
         int gpsHour = (currentSec / 3600) % 24;
         int gpsMin = (currentSec % 3600) / 60;
         int gpsSec = currentSec % 60;
 
-        // 3. 模擬 GPS 速度與地面 SD 狀態
-        float gpsSpeed = 0.0; // LoRa 封包未包含速度，此處預設為 0
-        String sdStatus = "1"; // 地面站直接預設給予正常訊號
-
-        // 4. 估算溫度 (若沒收到，給予常溫 25.0)
+        float gpsSpeed = 0.0; 
+        String sdStatus = "1"; 
         float tempC = 25.0;
 
+        // 🟢 雙保險：在電腦螢幕上顯示接收成功（如果你是用 Arduino 監控器看的話）
+        // 如果是要接 Python，你可以忽略這行 debug 提示，它不會干擾乾淨的 CSV 解析
+        // Serial.println(F("[OK] 成功接收並解析一筆航電封包！"));
+
         // ==========================================
-        // 🖥️ 【關鍵：100% 契合 Python 地面站的 16 欄位 CSV 輸出】
+        // 🖥️ 【100% 契合 Python 地面站的 16 欄位 CSV 輸出】
         // ==========================================
         Serial.print(tempC, 1);       Serial.print(","); // 1. Temp
         Serial.print(orient, 2);      Serial.print(","); // 2. Orient
@@ -120,7 +120,7 @@ void loop() {
         Serial.print(sats);           Serial.print(","); // 13. GPS Sats
         Serial.print(gpsHour);        Serial.print(","); // 14. Hour
         Serial.print(gpsMin);         Serial.print(","); // 15. Minute
-        Serial.println(gpsSec);                          // 16. Second (換行)
+        Serial.println(gpsSec);                          // 16. Second
       }
     }
   }
