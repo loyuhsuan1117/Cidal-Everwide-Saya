@@ -3,128 +3,139 @@
 #include <Adafruit_BMP3XX.h>
 
 // ===== 硬體定義 =====
-#define DEPLOY_PIN 6		// 開傘觸發引腳
+#define DEPLOY_PIN 6        // 開傘觸發引腳
 Adafruit_BMP3XX bmp;
 
-// ===== 測試用門檻 (專為室內/電梯測試調整) =====
-const float ARMING_ALT = 1.5;		// 超過 1.5 公尺即進入高頻追蹤 (模擬 800m)
-const float DROP_THRESHOLD = 0.5;	// 下降 0.5 公尺即觸發開傘 (模擬頂點下墜)
+// ===== 🚀 模擬參數區 (等模擬結果出來改這裡) =====
+const float ARMING_ALT = 800.0;     // 進入高頻追蹤的高度 (單位：公尺，例如模擬出來的 800m)
+const float DROP_THRESHOLD = 2.0;   // 從頂點下降多少公尺觸發開傘 (建議實際飛行設 2~5m，避免氣流雜訊誤判)
+const float LAUNCH_THRESHOLD = 5.0;  // 判定火箭離架發射的高度門檻 (建議設 5~10m)
 
 // ===== 全域變數 =====
 float groundPressure = 0;
 float maxAlt = 0;
 float currentAlt = 0;
 unsigned long lastLog = 0;
-int logInterval = 500;		// 初始 500ms
+int logInterval = 500;      // 初始 500ms
 
 enum FlightState { STANDBY, ASCENT, APOGEE_HUNTING, DEPLOYED };
 FlightState rocketState = STANDBY;
 
 void setup() {
-	Serial.begin(115200);
-	pinMode(DEPLOY_PIN, OUTPUT);
-	digitalWrite(DEPLOY_PIN, LOW);
+  Serial.begin(115200);
+  pinMode(DEPLOY_PIN, OUTPUT);
+  digitalWrite(DEPLOY_PIN, LOW);
 
-	Wire.begin(8, 9);
-	
-	if (!bmp.begin_I2C()) {
-		Serial.println("❌ BMP390 啟動失敗");
-		while (1);
-	}
+  Wire.begin(8, 9);
+  
+  if (!bmp.begin_I2C()) {
+    Serial.println("❌ BMP390 啟動失敗");
+    while (1);
+  }
 
-	// 設定硬體濾波器 (這對穩定度很重要)
-	bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
-	bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
-	bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
-	bmp.setOutputDataRate(BMP3_ODR_50_HZ);
+  // 設定硬體濾波器
+  bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
+  bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
+  bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
+  bmp.setOutputDataRate(BMP3_ODR_50_HZ);
 
-	// --- 加強版自動歸零 ---
-	delay(2000); // 讓感測器熱身，這對消除開機漂移很有幫助
-	Serial.println("\n>>> 正在進行歸零校準，請保持感測器靜止...");
-	
-	float pSum = 0;
-	int successCount = 0;
-	
-	// 先丟棄前 10 次讀數 (讓內部的 IIR 濾波器穩定)
-	for(int i=0; i<10; i++) {
-		bmp.performReading();
-		delay(50);
-	}
+  // --- 加強版 10 秒自動歸零 ---
+  delay(2000); // 讓感測器熱身與穩定
+  Serial.println("\n>>> 正在進行 10 秒歸零校準，請保持感測器完全靜止...");
+  
+  // 先丟棄前 20 次讀數 (讓內部的 IIR 濾波器徹底穩定)
+  for(int i = 0; i < 20; i++) {
+    bmp.performReading();
+    delay(50);
+  }
 
-	// 正式採樣 50 次取平均
-	while (successCount < 50) {
-		if (bmp.performReading()) {
-			pSum += bmp.pressure / 100.0;
-			successCount++;
-			if (successCount % 10 == 0) Serial.print("."); 
-			delay(30); // 稍微拉開間隔，讓採樣更平均
-		}
-	}
-	
-	groundPressure = pSum / 50.0;
-	
-	Serial.printf("\n✅ 校準完成！基準氣壓: %.2f hPa\n", groundPressure);
-	Serial.println("現在開始的高度應該要是 0 左右。");
+  float pSum = 0;
+  int successCount = 0;
+  unsigned long calibrationStart = millis();
+
+  // 持續讀取 10000 毫秒 (10秒)
+  while (millis() - calibrationStart < 10000) {
+    if (bmp.performReading()) {
+      pSum += bmp.pressure / 100.0;
+      successCount++;
+      if (successCount % 20 == 0) Serial.print("."); 
+    }
+    delay(50); // 每 50ms 採樣一次，10 秒約採樣 200 次
+  }
+  
+  if (successCount > 0) {
+    groundPressure = pSum / successCount;
+  } else {
+    groundPressure = 1013.25; // 防呆安全機制：若全失敗則帶入標準大氣壓
+    Serial.println("\n⚠️ 校準失敗，使用預設大氣壓！");
+  }
+  
+  Serial.printf("\n✅ 校準完成！共採樣 %d 次\n", successCount);
+  Serial.printf("基準地面氣壓: %.2f hPa\n", groundPressure);
+  Serial.println("現在開始的高度應該要在 0 左右。");
 }
 
 void loop() {
-	if (millis() - lastLog >= logInterval) {
-		lastLog = millis();
+  // 核心高度計算不放進定時器，改為每次 loop 盡快更新，確保數值即時
+  if (bmp.performReading()) {
+    float p = bmp.pressure / 100.0;
+    currentAlt = 44330.0 * (1.0 - pow((p / groundPressure), 0.1903));
+  }
 
-		// 1. 取得相對高度
-		if (bmp.performReading()) {
-			float p = bmp.pressure / 100.0;
-			// 計算相對於 groundPressure 的位移
-			currentAlt = 44330.0 * (1.0 - pow((p / groundPressure), 0.1903));
-		}
+  // 狀態機邏輯
+  switch (rocketState) {
+    case STANDBY:
+      // 超過發射門檻判定為發射
+      if (currentAlt > LAUNCH_THRESHOLD) {
+        maxAlt = currentAlt; // 初始化最高點為當前高度
+        rocketState = ASCENT;
+        Serial.println("🚀 [狀態] 偵測到發射！");
+      }
+      break;
 
-		// 2. 測試邏輯狀態機
-		switch (rocketState) {
-			case STANDBY:
-				// 舉高超過 0.5m 視為啟動
-				if (currentAlt > 0.5) {
-					rocketState = ASCENT;
-					Serial.println("🚀 [狀態] 偵測到上升！");
-				}
-				break;
+    case ASCENT:
+      if (currentAlt > maxAlt) maxAlt = currentAlt;
+      
+      // 到達模擬決定的警戒高度，切換至高頻追蹤
+      if (currentAlt > ARMING_ALT) {
+        rocketState = APOGEE_HUNTING;
+        logInterval = 50; // 輸出頻率提高至 20Hz (50ms)
+        Serial.println("⚠️ [狀態] 已越過安全高度，進入高頻捕捉頂點...");
+      }
+      break;
 
-			case ASCENT:
-				if (currentAlt > maxAlt) maxAlt = currentAlt;
-				// 到達 1.5m 模擬 800m 的警戒區
-				if (currentAlt > ARMING_ALT) {
-					rocketState = APOGEE_HUNTING;
-					logInterval = 50; // 切換至高頻 (20Hz)
-					Serial.println("⚠️ [狀態] 已達門檻，進入高頻捕捉...");
-				}
-				break;
+    case APOGEE_HUNTING:
+      if (currentAlt > maxAlt) maxAlt = currentAlt;
+      
+      // 核心判斷：從最高點下降超過設定門檻 -> 開傘
+      if ((maxAlt - currentAlt) > DROP_THRESHOLD) {
+        fireParachute();
+      }
+      break;
 
-			case APOGEE_HUNTING:
-				if (currentAlt > maxAlt) maxAlt = currentAlt;
-				
-				// 核心判斷：是否比最高點下降了 0.5m
-				if ((maxAlt - currentAlt) > DROP_THRESHOLD) {
-					fireParachute();
-				}
-				break;
+    case DEPLOYED:
+      logInterval = 1000; // 開傘後降低 Log 頻率，減少晶片負擔
+      break;
+  }
 
-			case DEPLOYED:
-				logInterval = 1000;
-				break;
-		}
-
-		// 3. Serial Monitor 輸出 (方便你觀察數值)
-		Serial.print("高度: "); Serial.print(currentAlt, 2);
-		Serial.print(" | 最高: "); Serial.print(maxAlt, 2);
-		Serial.print(" | 狀態: "); 
-		if(rocketState == 0) Serial.println("待機");
-		else if(rocketState == 1) Serial.println("上升中");
-		else if(rocketState == 2) Serial.println("高頻追蹤");
-		else Serial.println("已開傘");
-	}
+  // 定時輸出 Serial Monitor 資訊
+  if (millis() - lastLog >= logInterval) {
+    lastLog = millis();
+    
+    Serial.print("高度: "); Serial.print(currentAlt, 2);
+    Serial.print(" m | 最高點: "); Serial.print(maxAlt, 2);
+    Serial.print(" m | 狀態: "); 
+    switch (rocketState) {
+      case STANDBY:        Serial.println("待機 (STANDBY)"); break;
+      case ASCENT:         Serial.println("上升 (ASCENT)"); break;
+      case APOGEE_HUNTING: Serial.println("高頻追蹤 (APOGEE HUNTING)"); break;
+      case DEPLOYED:       Serial.println("💥 已觸發開傘 (DEPLOYED) 💥"); break;
+    }
+  }
 }
 
 void fireParachute() {
-	digitalWrite(DEPLOY_PIN, HIGH); 
-	rocketState = DEPLOYED;
-	Serial.println("\n******* [！！！觸發開傘！！！] *******\n");
+  digitalWrite(DEPLOY_PIN, HIGH); 
+  rocketState = DEPLOYED;
+  Serial.println("\n******* [！！！觸發開傘！！！] *******\n");
 }
