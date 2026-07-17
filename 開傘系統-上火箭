@@ -19,8 +19,24 @@ const float G_THRESHOLD = 0.5;
 const unsigned long DEPLOY_DELAY = 18000; 
 
 void setup() {
+  // ================================================================
+  // 【終極救磚核心】一進 setup 立刻把 GPIO 0 拔高！
+  // 防止未通電/冷開機的 LoRa RST 把 GPIO 0 扯到 0.16V 導致後續硬體死鎖。
+  // ================================================================
+  pinMode(0, OUTPUT);
+  digitalWrite(0, HIGH); 
+  delay(50); // 給 LoRa 晶片 50 毫秒的時間從復位狀態清醒
+  // ================================================================
+
   Serial.begin(115200);
-  delay(1000); 
+  
+  // 💡 提示：如果你希望開機時一定要等電腦的 Serial Monitor 打開才往下跑，
+  // 可以把下面這三行「//」刪掉。如果是在火箭發射現場（沒接電腦），請維持「註解」狀態。
+  // while (!Serial) {
+  //   delay(10);
+  // }
+  
+  Serial.println("====== 火箭系統核心啟動 ======");
   
   pinMode(DEPLOY_PIN, OUTPUT);
   pinMode(LED_PIN, OUTPUT);
@@ -35,8 +51,11 @@ void setup() {
   
   // 頻率對齊地面站的 433.5 MHz
   if (!LoRa.begin(433.5E6)) {
-    Serial.println("❌ [硬體錯誤] LoRa 晶片啟動失敗，請檢查 PCB 上 2, 0, 35 腳位！");
-    while(1) { digitalWrite(LED_PIN, HIGH); delay(100); digitalWrite(LED_PIN, LOW); delay(100); }
+    Serial.println("❌ [硬體錯誤] LoRa 晶片啟動失敗！因為 GPIO 0 之前被拉低，請確認開機時有拿導線碰 3.3V！");
+    while(1) { 
+      digitalWrite(LED_PIN, HIGH); delay(100); 
+      digitalWrite(LED_PIN, LOW); delay(100); 
+    }
   }
   
   // 設定專屬同步字，過濾空中雜訊，與地面站一模一樣
