@@ -18,6 +18,11 @@ float baselineG = 1.0;
 const float G_THRESHOLD = 0.5;     
 const unsigned long DEPLOY_DELAY = 18000; 
 
+// ===== 【氣壓測試設定】 =====
+float baselinePressure = 0.0; 
+// 💡 測試門檻：當前氣壓比地面基準高出 0.3 hPa（對它吹氣或用手壓住即可觸發）
+const float PRESSURE_TRIGGER_OFFSET = 0.3; 
+
 void setup() {
   // ================================================================
   // 【終極救磚核心】一進 setup 立刻把 GPIO 0 拔高！
@@ -29,21 +34,14 @@ void setup() {
   // ================================================================
 
   Serial.begin(115200);
-  
-  // 💡 提示：如果你希望開機時一定要等電腦的 Serial Monitor 打開才往下跑，
-  // 可以把下面這三行「//」刪掉。如果是在火箭發射現場（沒接電腦），請維持「註解」狀態。
-  // while (!Serial) {
-  //   delay(10);
-  // }
-  
-  Serial.println("====== 火箭系統核心啟動 ======");
+  Serial.println("====== 火箭測試系統啟動 ======");
   
   pinMode(DEPLOY_PIN, OUTPUT);
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(DEPLOY_PIN, LOW);
   digitalWrite(LED_PIN, LOW);
 
-  // 【完全配合 PCB】初始化 SPI：MISO=12, MOSI=13, SCK=14, NSS/CS=2
+  // 【完全配合 PCB】初始化 SPI
   SPI.begin(14, 12, 13, 2); // SCK, MISO, MOSI, SS
   
   // 【完全配合 PCB】設定 LoRa 專用腳位：NSS=2, RST=0, DIO0=35
@@ -51,22 +49,38 @@ void setup() {
   
   // 頻率對齊地面站的 433.5 MHz
   if (!LoRa.begin(433.5E6)) {
-    Serial.println("❌ [硬體錯誤] LoRa 晶片啟動失敗！因為 GPIO 0 之前被拉低，請確認開機時有拿導線碰 3.3V！");
+    Serial.println("❌ [硬體錯誤] LoRa 晶片啟動失敗！");
     while(1) { 
       digitalWrite(LED_PIN, HIGH); delay(100); 
       digitalWrite(LED_PIN, LOW); delay(100); 
     }
   }
-  
-  // 設定專屬同步字，過濾空中雜訊，與地面站一模一樣
   LoRa.setSyncWord(0x6B); 
-  Serial.println("✅ LoRa 硬體初始化成功（433.5MHz / NSS=2 / DIO0=35）！");
+  Serial.println("✅ LoRa 硬體初始化成功！");
 
-  // 初始化 I2C 加速規 (SDA, SCL 維持你原本的 8, 9)
+  // 初始化 I2C 總線
   Wire.begin(8, 9); 
+
+  // 初始化 LSM6DS3 加速規
   if (lsm6.begin() != 0) {
     Serial.println("❌ [硬體錯誤] LSM6DS3 未連接或 8, 9 腳位有誤！");
     while(1);
+  }
+
+  // 補上：初始化 BMP390 氣壓計
+  if (!bmp.begin_I2C(0x77, &Wire)) { // 預設 I2C 位址通常是 0x77
+    Serial.println("❌ [硬體錯誤] 找不到 BMP390 氣壓計！");
+    while(1);
+  }
+  bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
+  bmp.setPressureOversampling(BMP3_OVERSAMPLING_8X);
+  bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
+
+  // 讀取初始氣壓作為地面基準值
+  delay(100);
+  if (bmp.performReading()) {
+    baselinePressure = bmp.pressure / 100.0; // 轉換為 hPa
+    Serial.printf("✅ BMP390 初始化成功！當前地面氣壓: %.2f hPa\n", baselinePressure);
   }
 
   // 基準 G 值校準
@@ -88,58 +102,58 @@ void setup() {
 }
 
 void loop() {
-  // --- 優先權完全讓給無線電接收 ---
+  // 1. 無線電接收指令
   int packetSize = LoRa.parsePacket();
   if (packetSize > 0) {
     String cmd = "";
-    while (LoRa.available()) {
-      cmd += (char)LoRa.read();
-    }
-    
+    while (LoRa.available()) { cmd += (char)LoRa.read(); }
     Serial.printf("📡 偵測到無線訊號！內容: [%s]\n", cmd.c_str());
-
-    // 比對你指定的獨立開傘密碼標頭與清晰指令
     if (cmd.indexOf("#Cidal_Deploy#CMD:Eject_Parachute") >= 0) {
-      Serial.println("🎯 [地面指令符合] 偵測到 #Cidal_Deploy#！強制執行開傘！");
+      Serial.println("🎯 [地面指令符合] 強制執行開傘！");
       fireParachute();
       return; 
     }
   }
 
-  // 如果已經開傘，卡死在這裡，保護現場
+  // 如果已經開傘，卡死保護現場
   if (isDeployed) {
     digitalWrite(LED_PIN, HIGH); 
     return;
   }
 
-  // --- 大幅拉開加速規的讀取間隔，留出空檔給 LoRa 晶片處理中斷 ---
-  static unsigned long lastAccelTime = 0;
-  if (millis() - lastAccelTime > 100) { 
-    lastAccelTime = millis();
+  // 2. 讀取氣壓並進行開傘測試
+  static unsigned long lastBMPTime = 0;
+  if (millis() - lastBMPTime > 200) { // 每 0.2 秒檢查一次氣壓
+    lastBMPTime = millis();
+    
+    if (bmp.performReading()) {
+      float currentPressure = bmp.pressure / 100.0;
+      Serial.printf("📊 目前氣壓: %.2f hPa (基準: %.2f)\n", currentPressure, baselinePressure);
 
-    float ax = lsm6.readFloatAccelX();
-    float ay = lsm6.readFloatAccelY();
-    float az = lsm6.readFloatAccelZ();
-    float totalG = sqrt(pow(ax, 2) + pow(ay, 2) + pow(az, 2));
-
-    // 起飛偵測邏輯
-    if (!isLaunched && (totalG - baselineG) > G_THRESHOLD) {
-      isLaunched = true;
-      launchTime = millis();
-      Serial.printf("🚀 [起飛偵測] 成功！瞬間 G 值 %.2f，18秒自動開傘倒數開始...\n", totalG);
+      // 💡 測試邏輯：如果目前氣壓大於 (基準氣壓 + 0.3 hPa)，就觸發開傘
+      if (currentPressure > (baselinePressure + PRESSURE_TRIGGER_OFFSET)) {
+        Serial.println("🎈 [氣壓觸發] 偵測到氣壓明顯升高！執行開傘！");
+        fireParachute();
+        return;
+      }
     }
   }
 
-  // 倒數計時邏輯
+  // 3. 加速規起飛與定時 18 秒開傘
+  static unsigned long lastAccelTime = 0;
+  if (millis() - lastAccelTime > 100) { 
+    lastAccelTime = millis();
+    float totalG = sqrt(pow(lsm6.readFloatAccelX(), 2) + pow(lsm6.readFloatAccelY(), 2) + pow(lsm6.readFloatAccelZ(), 2));
+
+    if (!isLaunched && (totalG - baselineG) > G_THRESHOLD) {
+      isLaunched = true;
+      launchTime = millis();
+      Serial.printf("🚀 [起飛偵測] 成功！18秒自動開傘倒數開始...\n");
+    }
+  }
+
   if (isLaunched) {
     unsigned long elapsedTime = millis() - launchTime;
-    static unsigned long lastSecond = 0;
-    
-    if (elapsedTime / 1000 != lastSecond) {
-      lastSecond = elapsedTime / 1000;
-      Serial.printf("⏱️ T + %lu 秒\n", lastSecond);
-    }
-    
     if (elapsedTime >= DEPLOY_DELAY) {
       Serial.println("⏰ [時間到] 自動計時開傘！");
       fireParachute();
@@ -152,14 +166,10 @@ void loop() {
 void fireParachute() {
   if (isDeployed) return;
   isDeployed = true;
-  
-  // 【完全配合 PCB】GPIO 10 輸出高電位觸發開傘
   Serial.println("🔥 [執行] 開傘！GPIO 10 導通，GPIO 2 燈亮！");
   digitalWrite(DEPLOY_PIN, HIGH);
   digitalWrite(LED_PIN, HIGH);     
-  
-  delay(5000); // 保持 5 秒開傘訊號輸出
-  
+  delay(5000); 
   digitalWrite(DEPLOY_PIN, LOW);
   digitalWrite(LED_PIN, LOW);
   Serial.println("✅ 開傘程序結束。");
