@@ -1,10 +1,10 @@
 #include <SPI.h>
 #include <LoRa.h>
 
-// ===== 1. LoRa SX1278 引腳定義 (配合你習慣的 SPI 腳位) =====
-#define LORA_CS    2
-#define LORA_RST   0
-#define LORA_DIO0  35
+// ===== 1. LoRa SX1278 引腳定義 =====
+#define LORA_CS    2   // 已修改
+#define LORA_RST   1   // 已修改
+#define LORA_DIO0  21  // 已修改
 
 #define SCK     14
 #define MISO    12
