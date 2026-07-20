@@ -1,0 +1,122 @@
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP280.h> // 改為 BMP280 函式庫
+#include <LoRa.h>
+
+// ===== 引腳定義 (依照你的 ESP32-S3 接法) =====
+#define SD_CS      15
+#define SD_SCK     14
+#define SD_MISO    12
+#define SD_MOSI    13
+
+#define LORA_CS    2
+#define LORA_RST   0
+#define LORA_DIO0  35
+
+// ===== 物件與設定 =====
+Adafruit_BMP280 bmp; // 改為 BMP280 物件
+const char* filename = "/bmp_data.csv";
+const float SEALEVELPRESSURE_HPA = 1013.25; // 請依當地氣壓調整
+
+void setup() {
+  Serial.begin(115200);
+  
+  // 核心引腳初始化
+  pinMode(SD_CS, OUTPUT);
+  pinMode(LORA_CS, OUTPUT);
+  digitalWrite(SD_CS, HIGH); // 先拉高，確保未選取
+  digitalWrite(LORA_CS, HIGH); // 先拉高，確保未選取
+
+  Wire.begin(8, 9); // I2C 腳位
+
+  // 1. 初始化 BMP280
+  // 如果你的 BMP280 模組沒反應，請試著改成 bmp.begin(0x76)
+  if (!bmp.begin()) {
+    Serial.println("⚠️ BMP280 失敗");
+    while (1);
+  }
+  
+  /* BMP280 的採樣設定 */
+  bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* 工作模式 */
+                  Adafruit_BMP280::SAMPLING_X2,     /* 溫度過採樣 */
+                  Adafruit_BMP280::SAMPLING_X16,    /* 氣壓過採樣 */
+                  Adafruit_BMP280::FILTER_X16,      /* 濾波器設定 */
+                  Adafruit_BMP280::STANDBY_MS_500); /* 停止時間 */
+
+  // 2. 初始化 SD 卡
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  if (!SD.begin(SD_CS)) {
+    Serial.println("❌ SD 卡失敗");
+  } else {
+    if (!SD.exists(filename)) {
+      File dataFile = SD.open(filename, FILE_WRITE);
+      if (dataFile) {
+        dataFile.println("Time_ms,Temp_C,Press_hPa,Alt_m");
+        dataFile.close();
+      }
+    }
+    Serial.println("✅ SD 卡就緒");
+  }
+
+  // 3. 初始化 LoRa (433MHz)
+  LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
+  if (!LoRa.begin(433E6)) {
+    Serial.println("❌ LoRa 失敗");
+  } else {
+    LoRa.setTxPower(17); // 設定發射功率
+    Serial.println("✅ LoRa 就緒");
+  }
+}
+
+void loop() {
+  // BMP280 直接讀取數值
+  float temp = bmp.readTemperature();
+  float press = bmp.readPressure() / 100.0; // Pa 轉 hPa
+  float alt = bmp.readAltitude(SEALEVELPRESSURE_HPA);
+
+  // 檢查感測器數值是否正常
+  if (isnan(temp) || isnan(press)) {
+    Serial.println("⚠️ BMP280 讀取異常");
+    delay(100);
+    return;
+  }
+
+  // --- A. 格式化 LoRa 報告內容 (易讀格式) ---
+  String loraReport = "--- Data ---\n";
+  loraReport += "Time: " + String(millis() / 1000) + "s\n";
+  loraReport += "Temp: " + String(temp, 1) + " C\n";
+  loraReport += "Pres: " + String(press, 1) + " hPa\n";
+  loraReport += "Alt : " + String(alt, 1) + " m";
+
+  // --- B. LoRa 發射 ---
+  // 由 LoRa 函式庫底層自動控制 LORA_CS，移除手動 digitalWrite 的衝突風險
+  if (LoRa.beginPacket()) {
+    LoRa.print(loraReport);
+    LoRa.endPacket();
+    Serial.println("📡 LoRa 傳送成功");
+  } else {
+    Serial.println("❌ LoRa 傳送失敗");
+  }
+
+  // --- C. SD 卡紀錄 ---
+  // 由 SD 函式庫底層自動控制 SD_CS
+  File dataFile = SD.open(filename, FILE_APPEND);
+  if (dataFile) {
+    dataFile.print(millis()); dataFile.print(",");
+    dataFile.print(temp, 2);  dataFile.print(",");
+    dataFile.print(press, 2); dataFile.print(",");
+    dataFile.println(alt, 2);
+    dataFile.close();
+    Serial.print("💾 SD 紀錄成功 | ");
+  } else {
+    Serial.print("❌ SD 寫入失敗 | ");
+  }
+
+  // 螢幕監控
+  Serial.println(loraReport);
+  Serial.println("-----------------");
+
+  delay(1000); // 每秒執行一次
+}
