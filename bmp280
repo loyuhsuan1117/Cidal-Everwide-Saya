@@ -1,0 +1,103 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP280.h> // 改為 BMP280 函式庫
+#include <SPI.h>
+#include <SD.h>
+#include <math.h> // 引入數學庫以使用 pow()
+
+// ===== 你的 SD 接線 =====
+#define SD_CS   15
+#define SD_SCK  14
+#define SD_MISO 12
+#define SD_MOSI 13
+
+// ===== 海平面氣壓設定 (hPa) =====
+// 標準值為 1013.25，若要更準確，請填入當地的海平面氣壓
+#define SEALEVELPRESSURE_HPA (1013.25)
+
+Adafruit_BMP280 bmp; // 改為 BMP280 物件
+File dataFile;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(8, 9); // BMP280 I2C 腳位
+
+  // 初始化 BMP280，如果你的模組 I2C 位址是 0x76，請改成 bmp.begin(0x76)
+  if (!bmp.begin()) {
+    Serial.println("BMP280 初始化失敗");
+    while (1);
+  }
+
+  /* BMP280 的採樣設定 */
+  bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* 工作模式 */
+                  Adafruit_BMP280::SAMPLING_X2,     /* 溫度過採樣 */
+                  Adafruit_BMP280::SAMPLING_X16,    /* 氣壓過採樣 */
+                  Adafruit_BMP280::FILTER_X16,      /* 濾波器設定 */
+                  Adafruit_BMP280::STANDBY_MS_500); /* 停止時間 */
+
+  Serial.println("BMP280 初始化成功");
+
+  // 暖機
+  for (int i = 0; i < 5; i++) {
+    bmp.readTemperature();
+    bmp.readPressure();
+    delay(100);
+  }
+
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+
+  if (!SD.begin(SD_CS)) {
+    Serial.println("SD 卡初始化失敗");
+    return;
+  }
+  
+  // 建立檔案並更新標題列
+  dataFile = SD.open("/bmp280.csv", FILE_WRITE);
+  if (dataFile) {
+    dataFile.println("Time_ms,Temperature_C,Pressure_hPa,Altitude_m");
+    dataFile.close();
+  }
+}
+
+void loop() {
+  // BMP280 讀取資料（直接讀取數值）
+  float temperature = bmp.readTemperature();     // T
+  float pressure = bmp.readPressure() / 100.0;   // P (Pa 轉 hPa)
+
+  // 檢查數值是否異常
+  if (isnan(temperature) || isnan(pressure)) {
+    Serial.println("BMP280 讀取失敗");
+    delay(100);
+    return;
+  }
+
+  // ===== 根據公式計算高度 h =====
+  // h = [((P0/P)^(1/5.257)) - 1] * (T + 273.15) / 0.0065
+  float exponent = 1.0 / 5.257;
+  // 這裡改用你最上面設定的 SEALEVELPRESSURE_HPA 變數
+  float altitude = (pow((SEALEVELPRESSURE_HPA / pressure), exponent) - 1.0) * (temperature + 273.15) / 0.0065;
+
+  // 序列輸出
+  Serial.print("Temperature °C: "); Serial.println(temperature);
+  Serial.print("Pressure hPa: "); Serial.println(pressure);
+  Serial.print("Altitude m: "); Serial.println(altitude);
+  Serial.println("-----------------");
+
+  // 寫入 SD (統一使用 bmp280.csv 檔名)
+  dataFile = SD.open("/bmp280.csv", FILE_APPEND);
+  if (dataFile) {
+    dataFile.print(millis());
+    dataFile.print(",");
+    dataFile.print(temperature, 3);
+    dataFile.print(",");
+    dataFile.print(pressure, 3);
+    dataFile.print(",");
+    dataFile.print(altitude, 3); // 寫入高度
+    dataFile.close();
+    Serial.println("寫入 SD 成功");
+  } else {
+    Serial.println("開檔失敗");
+  }
+
+  delay(500);
+}
