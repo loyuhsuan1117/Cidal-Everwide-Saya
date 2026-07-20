@@ -2,7 +2,7 @@
 #include <SPI.h>
 #include <SD.h>
 #include <Adafruit_Sensor.h>
-#include <Adafruit_BMP3XX.h>
+#include <Adafruit_BMP280.h> // 1. 已修改為 BMP280 函式庫
 #include <Adafruit_LSM9DS1.h>
 #include <TinyGPS++.h>
 #include "SparkFunLSM6DS3.h"
@@ -14,15 +14,17 @@
 #define SD_SCK     14
 #define SD_MISO    12
 #define SD_MOSI    13
+
+// 2. 根據圖片修改 LoRa 天線引腳
 #define LORA_CS      2
-#define LORA_RST     0
-#define LORA_DIO0    35
+#define LORA_RST     1  // 已由 0 改為 1
+#define LORA_DIO0    21 // 已由 35 改為 21
 #define RXD2 4
 #define TXD2 5
 
 #define WDT_TIMEOUT 2 // 看門狗超時時間 (2秒)
 
-Adafruit_BMP3XX bmp;
+Adafruit_BMP280 bmp; // 3. 已修改為 BMP280 物件
 LSM6DS3 lsm6(I2C_MODE, 0x6A);      
 Adafruit_LSM9DS1 lsm9 = Adafruit_LSM9DS1(); 
 TinyGPSPlus gps;
@@ -42,9 +44,9 @@ void setup() {
   Serial.begin(115200);
   delay(2000); 
 
-  Serial.println("\n--- 系統啟動：火箭終極硬體防死鎖安全版 ---");
+  Serial.println("\n--- 系統啟動：火箭終極硬體防死鎖安全版 (BMP280四腳位+新天線版) ---");
 
-  // 1. 初始化看門狗 (Core 3.x 結構體配置)
+  // 初始化看門狗 (Core 3.x 結構體配置)
   esp_task_wdt_config_t wdt_config = {
     .timeout_ms = WDT_TIMEOUT * 1000,
     .idle_core_mask = 0,
@@ -53,21 +55,42 @@ void setup() {
   esp_task_wdt_init(&wdt_config);
   esp_task_wdt_add(NULL);
 
-  // 2. 開啟 I2C 並設定硬體超時
+  // 開啟 I2C 並設定硬體超時
   Wire.begin(8, 9);
   Wire.setTimeOut(25); 
 
   neogps.begin(38400, SERIAL_8N1, RXD2, TXD2);
 
-  // 3. 唯一次初始化
-  if (bmp.begin_I2C()) { bmpAlive = true; } else { Serial.println("⚠️ BMP390 失敗"); }
+  // 4. BMP280 唯一次初始化（支援四腳位自動雙位址探測）
+  if (bmp.begin(0x77)) { 
+    bmpAlive = true; 
+    Serial.println("✅ BMP280 成功 (位址: 0x77)");
+  } else if (bmp.begin(0x76)) { 
+    bmpAlive = true; 
+    Serial.println("✅ BMP280 成功 (位址: 0x76)");
+  } else { 
+    Serial.println("⚠️ BMP280 失敗"); 
+  }
+
+  // 若 BMP280 初始化成功，套用採樣與濾波設定
+  if (bmpAlive) {
+    bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,
+                    Adafruit_BMP280::SAMPLING_X2,
+                    Adafruit_BMP280::SAMPLING_X16,
+                    Adafruit_BMP280::FILTER_X16,
+                    Adafruit_BMP280::STANDBY_MS_500);
+  }
+
+  // 初始化 LSM6DS3
   if (lsm6.begin() == 0) { lsm6Alive = true; } else { Serial.println("⚠️ LSM6DS3 失敗"); }
+  
+  // 初始化 LSM9DS1
   if (lsm9.begin()) { 
     lsm9Alive = true; 
     lsm9.setupMag(lsm9.LSM9DS1_MAGGAIN_4GAUSS);
   } else { Serial.println("⚠️ LSM9DS1 失敗"); }
 
-  // 4. SPI 與 SD 卡初始化
+  // SPI 與 SD 卡初始化
   SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
   if (!SD.begin(SD_CS, SPI, 1000000)) {
     Serial.println("❌ SD 失敗");
@@ -82,7 +105,7 @@ void setup() {
     Serial.println("✅ SD 準備就緒");
   }
 
-  // 5. LoRa 初始化
+  // LoRa 初始化
   LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
   // 設定頻率為 434.5MHz
   if (!LoRa.begin(434.5E6)) {
@@ -120,11 +143,16 @@ void logAndDisplayAllData() {
   double lat = 0, lng = 0, alt = 0;
   int sats = 0;
 
-  // 讀取 BMP390 並換算海平面高度
+  // 5. 讀取 BMP280 並換算海平面高度
   if (bmpAlive) {
-    if (bmp.performReading()) {
-      temp = bmp.temperature;
-      press = bmp.pressure / 100.0;
+    temp = bmp.readTemperature();
+    press = bmp.readPressure() / 100.0; // Pa 轉 hPa
+    if (isnan(temp) || isnan(press)) {
+      temp = 0;
+      press = 0;
+      bmp_alt = 0;
+    } else {
+      // 使用與原本相同的高高換算公式 (1013.25 為標準海平面氣壓)
       bmp_alt = 44330.0 * (1.0 - pow(press / 1013.25, 0.1903));
     }
   }
@@ -156,7 +184,7 @@ void logAndDisplayAllData() {
     sats = gps.satellites.value();
   }
 
-  // --- 【修改點】在傳輸字串開頭加上專屬識別密碼：#SUPER_BBOX# ---
+  // 傳輸字串開頭加上專屬識別密碼：#SUPER_BBOX#
   String loraMsg = "#SUPER_BBOX#C:" + String(logCount);
   loraMsg += ",GPS:" + String(lat, 4) + "/" + String(lng, 4) + "/" + String(alt, 0);
   loraMsg += ",Sat:" + String(sats);
@@ -169,7 +197,7 @@ void logAndDisplayAllData() {
   Serial.println("========================================");
   Serial.print("第 "); Serial.print(logCount); Serial.println(" 次數據紀錄：");
   Serial.print("📍 GPS: "); Serial.print(lat, 6); Serial.print(", "); Serial.print(lng, 6); Serial.print(" | Sat: "); Serial.print(sats);
-  Serial.print(" | ☁️ 環境: "); Serial.print(press); Serial.print(" hPa | "); Serial.print(temp); Serial.print(" C | 🏔️ 高度: "); Serial.print(bmp_alt, 2); Serial.println(" m");
+  Serial.print(" | ☁️ 環境(BMP280): "); Serial.print(press); Serial.print(" hPa | "); Serial.print(temp); Serial.print(" C | 🏔️ 高度: "); Serial.print(bmp_alt, 2); Serial.println(" m");
   Serial.print("🏃 加速度: "); Serial.print(ax, 2); Serial.print(", "); Serial.print(ay, 2); Serial.print(", "); Serial.print(az, 2);
   Serial.print(" | 🧲 磁力計: "); Serial.print(mx, 2); Serial.print(", "); Serial.print(my, 2); Serial.println(mz, 2);
 
