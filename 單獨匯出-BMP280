@@ -1,0 +1,204 @@
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP280.h> // 1. 改為 BMP280 函式庫
+#include <Adafruit_LSM9DS1.h>
+#include <TinyGPS++.h>
+#include "SparkFunLSM6DS3.h"
+#include <LoRa.h> 
+
+// ===== 引腳定義 (保持不變) =====
+#define SD_CS      15
+#define SD_SCK     14
+#define SD_MISO    12
+#define SD_MOSI    13
+#define LORA_CS      2
+#define LORA_RST     0
+#define LORA_DIO0    35
+#define RXD2 4
+#define TXD2 5
+
+// ===== 物件與變數宣告 =====
+Adafruit_BMP280 bmp; // 2. 改為 BMP280 物件
+LSM6DS3 lsm6(I2C_MODE, 0x6A);      
+Adafruit_LSM9DS1 lsm9 = Adafruit_LSM9DS1(); 
+TinyGPSPlus gps;
+HardwareSerial neogps(2);
+File dataFile;
+
+const char* filename = "/super_blackbox.csv";
+unsigned long logCount = 0; 
+unsigned long lastGpsPulse = 0; 
+
+// 檢查各感測器是否在 setup 成功初始化
+bool bmpReady = false;
+bool lsm6Ready = false;
+bool lsm9Ready = false;
+
+void setup() {
+  Serial.begin(115200);
+  delay(2000); 
+
+  pinMode(SD_CS, OUTPUT);
+  pinMode(LORA_CS, OUTPUT);
+  digitalWrite(SD_CS, HIGH);
+  digitalWrite(LORA_CS, HIGH);
+
+  Serial.println("\n--- 系統啟動：LoRa 精簡數據 BMP280 版 ---");
+
+  Wire.begin(8, 9);
+  neogps.begin(38400, SERIAL_8N1, RXD2, TXD2);
+
+  // 3. 初始化 BMP280 (若沒反應，請嘗試改為 bmp.begin(0x76))
+  if (!bmp.begin()) {
+    Serial.println("⚠️ BMP280 失敗");
+  } else {
+    bmpReady = true;
+    /* BMP280 的採樣設定 */
+    bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,
+                    Adafruit_BMP280::SAMPLING_X2,
+                    Adafruit_BMP280::SAMPLING_X16,
+                    Adafruit_BMP280::FILTER_X16,
+                    Adafruit_BMP280::STANDBY_MS_500);
+  }
+
+  // 初始化 LSM6DS3 (只在 setup 初始化一次)
+  if (lsm6.begin() != 0) Serial.println("⚠️ LSM6DS3 失敗");
+  else lsm6Ready = true;
+
+  // 初始化 LSM9DS1 (只在 setup 初始化一次)
+  if (!lsm9.begin()) Serial.println("⚠️ LSM9DS1 失敗");
+  else {
+    lsm9Ready = true;
+    lsm9.setupMag(lsm9.LSM9DS1_MAGGAIN_4GAUSS);
+  }
+
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  if (!SD.begin(SD_CS, SPI, 1000000)) {
+    Serial.println("❌ SD 失敗");
+  } else {
+    if (!SD.exists(filename)) {
+      dataFile = SD.open(filename, FILE_WRITE);
+      if (dataFile) {
+        dataFile.println("Count,Lat,Lng,Alt_m,Sats,Temp_C,Press_hPa,AccX,AccY,AccZ,GyroX,GyroY,GyroZ,MagX,MagY,MagZ");
+        dataFile.close();
+      }
+    }
+    Serial.println("✅ SD 準備就緒");
+  }
+
+  LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
+  if (!LoRa.begin(433E6)) {
+    Serial.println("❌ LoRa 失敗");
+  } else {
+    LoRa.setTxPower(17);
+    Serial.println("✅ LoRa 成功");
+  }
+}
+
+void loop() {
+  while (neogps.available() > 0) {
+    gps.encode(neogps.read());
+    lastGpsPulse = millis();
+  }
+
+  static unsigned long lastLog = 0;
+  if (millis() - lastLog >= 500) {
+    lastLog = millis();
+    logAndDisplayAllData();
+  }
+}
+
+void logAndDisplayAllData() {
+  logCount++;
+
+  // --- 1. 數值初始歸零 ---
+  float temp = 0, press = 0;
+  float ax = 0, ay = 0, az = 0;
+  float gx = 0, gy = 0, gz = 0;
+  float mx = 0, my = 0, mz = 0;
+  double lat = 0, lng = 0, alt = 0;
+  int sats = 0;
+
+  // --- 2. 讀取感測器數據 (移除重覆 begin 邏輯以提升效率) ---
+  if (bmpReady) {
+    temp = bmp.readTemperature();
+    press = bmp.readPressure() / 100.0; // Pa 轉 hPa
+    
+    // 防呆：若讀到非數字則歸零
+    if (isnan(temp) || isnan(press)) {
+      temp = 0;
+      press = 0;
+    }
+  }
+
+  if (lsm6Ready) { 
+    ax = lsm6.readFloatAccelX();
+    ay = lsm6.readFloatAccelY();
+    az = lsm6.readFloatAccelZ();
+    gx = lsm6.readFloatGyroX();
+    gy = lsm6.readFloatGyroY();
+    gz = lsm6.readFloatGyroZ();
+  } 
+
+  sensors_event_t a, m, g, t;
+  if (lsm9Ready) { 
+    lsm9.getEvent(&a, &m, &g, &t);
+    mx = m.magnetic.x;
+    my = m.magnetic.y;
+    mz = m.magnetic.z;
+  }
+
+  if (gps.location.isValid() && (millis() - lastGpsPulse < 1500)) {
+    lat = gps.location.lat();
+    lng = gps.location.lng();
+    alt = gps.altitude.meters();
+    sats = gps.satellites.value();
+  }
+
+  // --- 3. 建立 LoRa 報表字串 (僅包含次數與 BMP280 氣壓溫度) ---
+  String loraMsg = "C:" + String(logCount) + ",P:" + String(press, 2) + ",T:" + String(temp, 1);
+
+  // --- 4. Serial Monitor 詳細顯示 ---
+  Serial.println("========================================");
+  Serial.print("第 "); Serial.print(logCount); Serial.println(" 次紀錄數據：");
+  Serial.print("📍 GPS: "); Serial.print(lat, 6); Serial.print(", "); Serial.println(lng, 6);
+  Serial.print("☁️ 環境(BMP280): "); Serial.print(press); Serial.print(" hPa | "); Serial.print(temp); Serial.println(" C");
+  Serial.print("🏃 加速度: "); Serial.print(ax); Serial.print(", "); Serial.print(ay); Serial.print(", "); Serial.println(az);
+
+  // --- 5. SD 卡完整寫入 (由 SD 函式庫自動控制 CS，移除手動切換) ---
+  dataFile = SD.open(filename, FILE_APPEND);
+  if (dataFile) {
+    dataFile.print(logCount); dataFile.print(",");
+    dataFile.print(lat, 6); dataFile.print(",");
+    dataFile.print(lng, 6); dataFile.print(",");
+    dataFile.print(alt, 1); dataFile.print(",");
+    dataFile.print(sats); dataFile.print(",");
+    dataFile.print(temp, 2); dataFile.print(",");
+    dataFile.print(press, 2); dataFile.print(",");
+    dataFile.print(ax, 4); dataFile.print(",");
+    dataFile.print(ay, 4); dataFile.print(",");
+    dataFile.print(az, 4); dataFile.print(",");
+    dataFile.print(gx, 4); dataFile.print(",");
+    dataFile.print(gy, 4); dataFile.print(",");
+    dataFile.print(gz, 4); dataFile.print(",");
+    dataFile.print(mx, 4); dataFile.print(",");
+    dataFile.print(my, 4); dataFile.print(",");
+    dataFile.println(mz, 4); 
+    
+    dataFile.close();
+    Serial.print("💾 SD: OK | ");
+  } else {
+    Serial.print("💾 SD: FAIL | ");
+  }
+
+  // --- 6. LoRa 發射 (由 LoRa 函式庫自動控制 CS，移除手動切換) ---
+  if (LoRa.beginPacket()) {
+    LoRa.print(loraMsg);
+    LoRa.endPacket();
+    Serial.println("📡 LoRa: OK (P/T only)");
+  } else {
+    Serial.println("📡 LoRa: BUSY");
+  }
+}
