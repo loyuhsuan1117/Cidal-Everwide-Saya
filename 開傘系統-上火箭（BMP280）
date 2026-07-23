@@ -11,10 +11,14 @@
 LSM6DS3 lsm6(I2C_MODE, 0x6A);
 Adafruit_BMP280 bmp;
 
+// ===== 感測器線上狀態標記 (防止硬體缺失時系統崩潰) =====
+bool hasLSM = true;
+bool hasBMP = true;
+
 bool isLaunched = false;
 bool isDeployed = false;
 unsigned long launchTime = 0;
-float baselineG = 1.0;            
+float baselineG = 1.0;             
 const float G_THRESHOLD = 0.5;     
 const unsigned long DEPLOY_DELAY = 18000; // 18 秒 (18000 ms)
 
@@ -25,7 +29,6 @@ const float TARGET_ALTITUDE_THRESHOLD = 1200.0; // 開傘目標高度：預設 1
 const int BUFFER_SIZE = 50; 
 float pressureBuffer[BUFFER_SIZE];
 int bufferIndex = 0;
-bool bufferFilled = false;
 float groundBaselinePressure = 1013.25; // 地面初始氣壓預設值
 
 void setup() {
@@ -39,7 +42,9 @@ void setup() {
   // ================================================================
 
   Serial.begin(115200);
-  Serial.println("====== 火箭測試系統啟動 ======");
+  Serial.println("==========================================");
+  Serial.println("--- 🚀 機載開傘系統啟動（降級備援模式） ---");
+  Serial.println("==========================================");
   
   pinMode(DEPLOY_PIN, OUTPUT);
   pinMode(LED_PIN, OUTPUT);
@@ -54,133 +59,157 @@ void setup() {
   
   // 頻率對齊地面站的 433.5 MHz
   if (!LoRa.begin(433.5E6)) {
-    Serial.println("❌ [硬體錯誤] LoRa 晶片啟動失敗！");
-    while(1) { 
-      digitalWrite(LED_PIN, HIGH); delay(100); 
-      digitalWrite(LED_PIN, LOW); delay(100); 
-    }
+    Serial.println("❌ [硬體致命錯誤] LoRa 晶片啟動失敗！請檢查 SPI 線路！");
+    // 注意：LoRa 是主安全警報核心，若 LoRa 壞掉才會閃燈提示，但依然繼續走下去
+  } else {
+    LoRa.setSyncWord(0x6B); 
+    Serial.println("✅ LoRa 無線電晶片初始化成功！(433.5 MHz / Sync: 0x6B)");
   }
-  LoRa.setSyncWord(0x6B); 
-  Serial.println("✅ LoRa 硬體初始化成功！");
 
   // 初始化 I2C 總線
   Wire.begin(8, 9); 
 
-  // 初始化 LSM6DS3 加速規
+  // 初始化 LSM6DS3 加速規 (不卡死設計)
   if (lsm6.begin() != 0) {
-    Serial.println("❌ [硬體錯誤] LSM6DS3 未連接或 8, 9 腳位有誤！");
-    while(1);
+    Serial.println("⚠️ [警告] LSM6DS3 未連接或初始化失敗！自動停用「加速規計時開傘」。");
+    hasLSM = false;
+  } else {
+    Serial.println("✅ LSM6DS3 加速規初始化成功！");
+    // 基準 G 值校準
+    Serial.println(">>> 正在校準加速度計...");
+    float sum = 0;
+    for(int i = 0; i < 20; i++) {
+      sum += sqrt(pow(lsm6.readFloatAccelX(), 2) + pow(lsm6.readFloatAccelY(), 2) + pow(lsm6.readFloatAccelZ(), 2));
+      delay(30);
+    }
+    baselineG = sum / 20.0;
+    Serial.printf("  └─ 校準完成！基準 G 值: %.2f\n", baselineG);
   }
 
-  // 初始化 BMP280 氣壓計 (嘗試 0x76 與 0x77)
+  // 初始化 BMP280 氣壓計 (不卡死設計)
   if (!bmp.begin(0x76) && !bmp.begin(0x77)) { 
-    Serial.println("❌ [硬體錯誤] 找不到 BMP280 氣壓計！");
-    while(1);
-  }
-  
-  bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* 工作模式 */
-                  Adafruit_BMP280::SAMPLING_X2,     /* 溫度過採樣 */
-                  Adafruit_BMP280::SAMPLING_X16,    /* 氣壓過採樣 */
-                  Adafruit_BMP280::FILTER_X16,      /* 濾波器設定 */
-                  Adafruit_BMP280::STANDBY_MS_500); /* 停止時間 */
+    Serial.println("⚠️ [警告] BMP280 氣壓計未連接！自動停用「氣壓高度開傘」。");
+    hasBMP = false;
+  } else {
+    bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* 工作模式 */
+                    Adafruit_BMP280::SAMPLING_X2,     /* 溫度過採樣 */
+                    Adafruit_BMP280::SAMPLING_X16,    /* 氣壓過採樣 */
+                    Adafruit_BMP280::FILTER_X16,      /* 濾波器設定 */
+                    Adafruit_BMP280::STANDBY_MS_500); /* 停止時間 */
 
-  // 讀取初始地面氣壓並填滿緩衝區陣列
-  delay(100);
-  groundBaselinePressure = bmp.readPressure() / 100.0; // Pa 轉 hPa
-  for (int i = 0; i < BUFFER_SIZE; i++) {
-    pressureBuffer[i] = groundBaselinePressure;
+    delay(100);
+    groundBaselinePressure = bmp.readPressure() / 100.0; // Pa 轉 hPa
+    for (int i = 0; i < BUFFER_SIZE; i++) {
+      pressureBuffer[i] = groundBaselinePressure;
+    }
+    Serial.printf("✅ BMP280 初始化成功！初始地面氣壓: %.2f hPa\n", groundBaselinePressure);
   }
-  Serial.printf("✅ BMP280 初始化成功！初始地面氣壓: %.2f hPa\n", groundBaselinePressure);
-
-  // 基準 G 值校準
-  Serial.println(">>> 正在校準加速度計...");
-  float sum = 0;
-  for(int i = 0; i < 20; i++) {
-    sum += sqrt(pow(lsm6.readFloatAccelX(), 2) + pow(lsm6.readFloatAccelY(), 2) + pow(lsm6.readFloatAccelZ(), 2));
-    delay(30);
-  }
-  baselineG = sum / 20.0;
-  Serial.printf("✅ 校準完成！基準 G 值: %.2f\n", baselineG);
   
   // 開機成功訊號：LED 閃爍三下
   for(int i=0; i<3; i++) {
     digitalWrite(LED_PIN, HIGH); delay(100);
     digitalWrite(LED_PIN, LOW);  delay(100);
   }
-  Serial.println("🚀 火箭系統就緒！");
+  Serial.println("------------------------------------------");
+  Serial.println("🚀 火箭機載系統進入待命！無線電監聽中...");
+  Serial.println("------------------------------------------");
 }
 
 void loop() {
-  // 1. 無線電接收指令
+  // ================================================================
+  // 1. 無線電接收指令與即時回報
+  // ================================================================
   int packetSize = LoRa.parsePacket();
   if (packetSize > 0) {
     String cmd = "";
-    while (LoRa.available()) { cmd += (char)LoRa.read(); }
-    Serial.printf("📡 偵測到無線訊號！內容: [%s]\n", cmd.c_str());
+    while (LoRa.available()) { 
+      cmd += (char)LoRa.read(); 
+    }
+    
+    // 取得訊號強度 RSSI 與 訊噪比 SNR
+    int rssi = LoRa.packetRssi();
+    float snr = LoRa.packetSnr();
+
+    Serial.println("------------------------------------------");
+    Serial.printf("📡 [無線電收到封包] 大小: %d bytes | RSSI: %d dBm | SNR: %.2f\n", packetSize, rssi, snr);
+    Serial.printf("💬 封包明文內容: [%s]\n", cmd.c_str());
+
+    // 檢查暗號密碼
     if (cmd.indexOf("#Cidal_Deploy#CMD:Eject_Parachute") >= 0) {
-      Serial.println("🎯 [地面指令符合] 強制執行開傘！");
+      Serial.println("🎯 驗證結果: 【密碼正確】驗證成功！立即強制執行開傘！");
+      Serial.println("------------------------------------------");
       fireParachute();
       return; 
+    } else {
+      Serial.println("⚠️ 驗證結果: 【密碼不符】忽略此封包（雜訊或異地訊號）。");
+      Serial.println("------------------------------------------");
     }
   }
 
-  // 如果已經開傘，卡死保護現場
+  // 如果已經開傘，卡死保護現場並讓 LED 恆亮
   if (isDeployed) {
     digitalWrite(LED_PIN, HIGH); 
     return;
   }
 
-  // 2. 氣壓高度計算與前 10 秒基準比對
-  static unsigned long lastBMPTime = 0;
-  if (millis() - lastBMPTime >= 200) { // 每 0.2 秒讀取一次 (1秒5次，50次即為10秒)
-    lastBMPTime = millis();
-    
-    float currentPressure = bmp.readPressure() / 100.0;
-    
-    if (!isnan(currentPressure) && currentPressure > 0) {
-      // 取得「10 秒前」的氣壓數值（即目前索引位置上一次存的舊資料）
-      float tenSecAgoPressure = pressureBuffer[bufferIndex];
+  // ================================================================
+  // 2. 氣壓高度計算 (只有在 BMP280 正常時運作)
+  // ================================================================
+  if (hasBMP) {
+    static unsigned long lastBMPTime = 0;
+    if (millis() - lastBMPTime >= 200) { // 每 0.2 秒讀取一次
+      lastBMPTime = millis();
       
-      // 將當前最新氣壓寫入緩衝區，並移動索引
-      pressureBuffer[bufferIndex] = currentPressure;
-      bufferIndex = (bufferIndex + 1) % BUFFER_SIZE;
+      float currentPressure = bmp.readPressure() / 100.0;
+      
+      if (!isnan(currentPressure) && currentPressure > 0) {
+        float tenSecAgoPressure = pressureBuffer[bufferIndex];
+        
+        pressureBuffer[bufferIndex] = currentPressure;
+        bufferIndex = (bufferIndex + 1) % BUFFER_SIZE;
 
-      // 利用氣壓公式計算相較於 10 秒前所上升的相對高度 (公尺)
-      float altCurrent = bmp.readAltitude(groundBaselinePressure); 
-      // 依據氣壓壓差計算相對高度：44330 * (1 - (P / P0)^(1/5.255))
-      float relativeAltitude = 44330.0 * (1.0 - pow(currentPressure / tenSecAgoPressure, 0.1903));
+        float relativeAltitude = 44330.0 * (1.0 - pow(currentPressure / tenSecAgoPressure, 0.1903));
 
-      Serial.printf("📊 當前氣壓: %.2f hPa | 10秒前氣壓: %.2f hPa | 近10秒上升高度: %.2f m (開傘門檻: %.0f m)\n", 
-                    currentPressure, tenSecAgoPressure, relativeAltitude, TARGET_ALTITUDE_THRESHOLD);
+        // 每隔 2 秒日誌回報一次，避免洗板
+        static unsigned long lastBMPLog = 0;
+        if (millis() - lastBMPLog > 2000) {
+          Serial.printf("📊 當前氣壓: %.2f hPa | 10秒上升高度: %.2f m\n", currentPressure, relativeAltitude);
+          lastBMPLog = millis();
+        }
 
-      // 💡 高度判斷：若近 10 秒上升高度超過設定值 (預設 1200m) 則觸發開傘
-      if (relativeAltitude >= TARGET_ALTITUDE_THRESHOLD) {
-        Serial.printf("🎈 [高度觸發] 近10秒高度變化達到 %.2f 公尺！執行開傘！\n", relativeAltitude);
-        fireParachute();
-        return;
+        if (relativeAltitude >= TARGET_ALTITUDE_THRESHOLD) {
+          Serial.printf("🎈 [高度觸發] 近10秒高度變化達到 %.2f 公尺！執行開傘！\n", relativeAltitude);
+          fireParachute();
+          return;
+        }
       }
     }
   }
 
-  // 3. 加速規起飛與倒數開傘
-  static unsigned long lastAccelTime = 0;
-  if (millis() - lastAccelTime > 100) { 
-    lastAccelTime = millis();
-    float totalG = sqrt(pow(lsm6.readFloatAccelX(), 2) + pow(lsm6.readFloatAccelY(), 2) + pow(lsm6.readFloatAccelZ(), 2));
+  // ================================================================
+  // 3. 加速規起飛偵測 (只有在 LSM6DS3 正常時運作)
+  // ================================================================
+  if (hasLSM) {
+    static unsigned long lastAccelTime = 0;
+    if (millis() - lastAccelTime > 100) { 
+      lastAccelTime = millis();
+      float totalG = sqrt(pow(lsm6.readFloatAccelX(), 2) + pow(lsm6.readFloatAccelY(), 2) + pow(lsm6.readFloatAccelZ(), 2));
 
-    if (!isLaunched && (totalG - baselineG) > G_THRESHOLD) {
-      isLaunched = true;
-      launchTime = millis();
-      Serial.println("🚀 [起飛偵測] 成功！18秒自動開傘計時開始...");
+      if (!isLaunched && (totalG - baselineG) > G_THRESHOLD) {
+        isLaunched = true;
+        launchTime = millis();
+        Serial.println("🚀 [起飛偵測] 成功！18秒自動開傘計時開始...");
+      }
     }
   }
 
+  // ================================================================
   // 4. 起飛後的即時秒數輸出與計時開傘
+  // ================================================================
   if (isLaunched) {
     static unsigned long lastSecondPrint = 0;
     unsigned long elapsedTime = millis() - launchTime;
 
-    // 每隔 1 秒 (1000ms) 印出目前秒數
     if (millis() - lastSecondPrint >= 1000) {
       lastSecondPrint = millis();
       int currentSeconds = elapsedTime / 1000;
@@ -208,5 +237,5 @@ void fireParachute() {
   delay(5000); 
   digitalWrite(DEPLOY_PIN, LOW);
   digitalWrite(LED_PIN, LOW);
-  Serial.println("✅ 開傘程序結束。");
+  Serial.println("✅ 開傘程序結束。系統進入鎖定狀態，保護現場。");
 }
