@@ -1,0 +1,127 @@
+#include <RadioLib.h>
+
+// 🎯 地面接收站腳位配置（與你的發射端完全相同，做板子時可直接防呆複製）
+#define LORA_NSS  13
+#define LORA_MOSI 15
+#define LORA_MISO 12
+#define LORA_SCK  14
+#define LORA_RST  10
+#define LORA_BSY  2
+#define LORA_D1   3
+#define LORA_RXE  7
+#define LORA_TXE  6
+
+SPIClassRP2040 LORA_SPI(spi1, LORA_MISO, LORA_NSS, LORA_SCK, LORA_MOSI);
+LLCC68 radio = new Module(LORA_NSS, LORA_D1, LORA_RST, LORA_BSY, LORA_SPI);
+
+void setup() {
+  pinMode(LORA_TXE, OUTPUT);
+  pinMode(LORA_RXE, OUTPUT);
+  digitalWrite(LORA_TXE, LOW);
+  digitalWrite(LORA_RXE, LOW);
+
+  Serial.begin(115200);
+  
+  // 延遲兩秒，確保你打開 Serial Monitor 時能完整看到開機畫面
+  delay(2000); 
+
+  Serial.println(F("\n============================================="));
+  Serial.println(F("📡 [地面接收站] 冗餘系統高階解調監聽台啟動"));
+  Serial.println(F("============================================="));
+
+  LORA_SPI.begin();
+  
+  // 必須與發射端參數完全一致：915.0MHz, 125kHz, SF9
+  int state = radio.begin(915.0, 125.0, 9, 7);
+  if (state == RADIOLIB_ERR_NONE) {
+    // 【修改點】地面端也同步加上硬體同步字 0x34 進行第一道過濾
+    radio.setSyncWord(0x34); 
+    Serial.println(F("✅ 射頻模組初始化成功，進入持續監聽模式..."));
+  } else {
+    // 錯誤 104 代表同步字設定失敗（LLCC68支援特定的LoRa同步碼，0x34為RadioLib合法值）
+    Serial.print(F("❌ 初始化失敗，錯誤代碼："));
+    Serial.println(state);
+    while (true);
+  }
+
+  // 射頻開關控制：地面站長駐接收模式（RXE拉高，TXE拉低）
+  digitalWrite(LORA_TXE, LOW);
+  digitalWrite(LORA_RXE, HIGH);
+}
+
+void loop() {
+  String receivedStr;
+  
+  // 檢查是否有無線電封包進來
+  int state = radio.receive(receivedStr);
+
+  if (state == RADIOLIB_ERR_NONE) {
+    
+    // --- 【修改點】軟體層強行檢查密碼標頭，不包含 #REDUN_BBOX# 則直接丟棄 ---
+    if (receivedStr.startsWith("#REDUN_BBOX#")) {
+      
+      // 把密碼標頭切掉（長度12），只留下後面的冗餘系統數據
+      String realData = receivedStr.substring(12);
+
+      // 1. 無條件立刻噴出原始字串（已去掉密碼，乾淨數據）
+      Serial.println(F("---------------------------------------------"));
+      Serial.print(F("[📡 收到冗餘封包]: ")); 
+      Serial.println(realData);
+      
+      // 2. 打印當前的射頻物理訊號品質
+      Serial.print(F("📊 RSSI: ")); Serial.print(radio.getRSSI()); Serial.print(F(" dBm | "));
+      Serial.print(F("🔊 SNR: ")); Serial.print(radio.getSNR()); Serial.println(F(" dB"));
+
+      // 3. 尋找字串中的所有逗號進行欄位切分
+      int commaIndex[12];
+      int count = 0;
+      for (int i = 0; i < realData.length(); i++) {
+        if (realData.charAt(i) == ',') {
+          if (count < 12) {
+            commaIndex[count] = i;
+            count++;
+          }
+        }
+      }
+
+      // 4. 如果剛好算到 12 個逗號（代表 13 個欄位完整無缺），就進行漂亮拆解
+      if (count == 12) {
+        Serial.println(F("✨ [詳細欄位拆解]:"));
+        String ms      = realData.substring(0, commaIndex[0]);
+        String ax      = realData.substring(commaIndex[0]+1, commaIndex[1]);
+        String ay      = realData.substring(commaIndex[1]+1, commaIndex[2]);
+        String az      = realData.substring(commaIndex[2]+1, commaIndex[3]);
+        String mx      = realData.substring(commaIndex[3]+1, commaIndex[4]);
+        String my      = realData.substring(commaIndex[4]+1, commaIndex[5]);
+        String mz      = realData.substring(commaIndex[5]+1, commaIndex[6]);
+        String press   = realData.substring(commaIndex[6]+1, commaIndex[7]);
+        String alt     = realData.substring(commaIndex[7]+1, commaIndex[8]);
+        String sats    = realData.substring(commaIndex[8]+1, commaIndex[9]);
+        String lat     = realData.substring(commaIndex[9]+1, commaIndex[10]);
+        String lng     = realData.substring(commaIndex[10]+1, commaIndex[11]);
+        String gps_alt = realData.substring(commaIndex[11]+1);
+
+        Serial.print(F("  ⏱️ 時間: ")); Serial.print(ms); Serial.println(F(" ms"));
+        Serial.print(F("  📐 加速: X=")); Serial.print(ax); Serial.print(F(", Y=")); Serial.print(ay); Serial.print(F(", Z=")); Serial.println(az);
+        Serial.print(F("  🧲 地磁: X=")); Serial.print(mx); Serial.print(F(", Y=")); Serial.print(my); Serial.print(F(", Z=")); Serial.println(mz);
+        Serial.print(F("  🎈 氣壓: ")); Serial.print(press); Serial.print(F(" hPa | 高度: ")); Serial.print(alt); Serial.println(F(" m"));
+        Serial.print(F("  🛰️ GPS : 衛星數=")); Serial.print(sats); Serial.print(F(" | 座標: ")); Serial.print(lat); Serial.print(F(", ")); Serial.println(lng);
+        Serial.print(F("  🏔️ GPS高度: ")); Serial.print(gps_alt); Serial.println(F(" m"));
+      } else {
+        Serial.print(F("⚠️ [提示] 封包資料長度不滿足標準拆解格式（預期12個逗號，實際計算到 "));
+        Serial.print(count);
+        Serial.println(F(" 個），僅顯示上方原始封包。"));
+      }
+      Serial.println(F("---------------------------------------------"));
+    } else {
+      // 捕獲到非我方標頭的干擾訊號，直接丟棄不予處理
+    }
+    
+  } else if (state == RADIOLIB_ERR_RX_TIMEOUT) {
+    // 沒有接收到數據，默默繼續等待
+  } else {
+    // 如果發生其它像是解調錯誤等異常，也直接印出代碼
+    Serial.print(F("⚠️ 接收異常，錯誤代碼: "));
+    Serial.println(state);
+  }
+}
