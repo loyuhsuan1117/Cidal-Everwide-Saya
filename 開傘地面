@@ -1,0 +1,84 @@
+#include <SPI.h>
+#include <LoRa.h>
+
+// ===== 1. LoRa SX1278 引腳定義 =====
+#define LORA_CS    2   // 已修改
+#define LORA_RST   1   // 已修改
+#define LORA_DIO0  21  // 已修改
+
+#define SCK     14
+#define MISO    12
+#define MOSI    13
+
+// ===== 2. 安全鎖與飛彈開關引腳 =====
+const int ARM_BUTTON_PIN = 4; // 2腳鑰匙開關與飛彈開關串聯後，接在 GPIO 4
+
+void setup() {
+  // 初始化序列埠，供電腦連接除錯觀看
+  Serial.begin(115200);
+  while (!Serial); // 等待序列埠視窗開啟
+
+  Serial.println("==========================================");
+  Serial.println("--- 🚀 獨立開傘地面發射控制台 啟動 ---");
+  Serial.println("==========================================");
+
+  // 初始化開關引腳：啟用內部上拉電阻
+  // 平常斷路時，GPIO 4 穩定保持高電位 (HIGH)
+  // 當鑰匙轉動且飛彈開關撥下時（通路），GPIO 4 與 GND 接通，電位變為 LOW
+  pinMode(ARM_BUTTON_PIN, INPUT_PULLUP);
+
+  // 初始化硬體 SPI 匯流排
+  SPI.begin(SCK, MISO, MOSI, LORA_CS);
+
+  // 設定 LoRa 函式庫控制引腳
+  LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
+
+  // 初始化 LoRa 晶片，頻率設定為天線最安全的 433.5 MHz
+  if (!LoRa.begin(433.5E6)) { 
+    Serial.println("❌ LoRa 初始化失敗，請檢查硬體接線！");
+    while (1); // 發生錯誤時卡死在原地，絕對不允許盲目發射
+  }
+
+  // 設定專屬同步字 (Sync Word)，與火箭接收端對齊以過濾雜訊
+  LoRa.setSyncWord(0x6B); 
+
+  Serial.println("✅ LoRa 晶片初始化成功！");
+  Serial.println("🛡️ 安全鎖待命：轉動鑰匙 ➔ 掀開飛彈蓋 ➔ 撥動開關 即可發射。");
+  Serial.println("------------------------------------------");
+}
+
+void loop() {
+  // 實時讀取 GPIO 4 的電位狀態
+  int switchState = digitalRead(ARM_BUTTON_PIN);
+
+  // 當兩個開關都導通（LOW）時，立即觸發發射
+  if (switchState == LOW) {
+    Serial.println("🚨 [CRITICAL] 開關已全導通！正在全功率發射開傘指令... 🚨");
+
+    // 1. 開始打包 LoRa 無線電封包
+    LoRa.beginPacket();
+    
+    // 2. 寫入專屬的密碼標頭與乾淨的動作指令
+    LoRa.print("#Cidal_Deploy#CMD:Eject_Parachute"); 
+    
+    // 3. 將封包以無線電波噴射出去（此動作完成才會往下走）
+    LoRa.endPacket();
+
+    Serial.println("📡 封包已噴出！");
+
+    // 4. 僅延遲 30 毫秒，維持極高頻率的「飽和式地毯轟炸」，確保火箭 100% 收到
+    delay(30); 
+    
+  } else {
+    // 平常未觸發（安全狀態），保持完全靜默，絕不發射任何無線電訊號
+    static unsigned long lastLogTime = 0;
+    
+    // 每隔 5 秒在序列埠視窗回報一次狀態，避免除錯訊息洗板
+    if (millis() - lastLogTime > 5000) { 
+      Serial.println("[安全] 系統靜默中，等待解鎖發射...");
+      lastLogTime = millis();
+    }
+    
+    delay(100); // 稍微休息，降低晶片無謂的運算負載
+  }
+}
