@@ -1,0 +1,115 @@
+#include <SPI.h>
+#include <LoRa.h>
+#include <SD.h>
+
+// ===== 修正後的 N16R8 安全引腳定義 =====
+#define SD_CS      15
+#define SD_SCK     14
+#define SD_MISO    12
+#define SD_MOSI    13
+
+#define LORA_CS     2
+#define LORA_RST    1   // 🛠️ 避開 GPIO 0，防止開機卡死
+#define LORA_DIO0   21  // 💥 避開 GPIO 35，防止內部 OPI PSRAM 衝突
+
+const char* filename = "/rx_flight_log.csv";
+File dataFile;
+
+void setup() {
+  // 安全逃生機制：開機強制等待 5 秒，確保電腦有時間辨識 USB，且方便隨時重新燒錄
+  delay(5000); 
+
+  Serial.begin(115200);
+  
+  // 原生 USB 模式安全鎖
+  uint32_t startTime = millis();
+  while (!Serial) {
+    if (millis() - startTime > 3000) break; 
+  }
+
+  Serial.println("\n--- LoRa 數據接收站 暨 SD卡紀錄器 啟動 ---");
+
+  // 強制先將兩個 SPI 的片選（CS）拉高，防總線衝突
+  pinMode(SD_CS, OUTPUT);
+  pinMode(LORA_CS, OUTPUT);
+  digitalWrite(SD_CS, HIGH);
+  digitalWrite(LORA_CS, HIGH);
+
+  // 1. 初始化共用 SPI 總線
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+
+  // 2. 初始化 SD 卡
+  digitalWrite(SD_CS, LOW);
+  if (!SD.begin(SD_CS, SPI, 1000000)) {
+    Serial.println("❌ SD 卡初始化失敗，請檢查接線！");
+  } else {
+    // 如果檔案不存在，建立新檔並寫入表頭
+    if (!SD.exists(filename)) {
+      dataFile = SD.open(filename, FILE_WRITE);
+      if (dataFile) {
+        dataFile.println("Raw_Telemetry_Data,RSSI");
+        dataFile.close();
+      }
+    }
+    Serial.println("✅ SD 卡準備就緒");
+  }
+  digitalWrite(SD_CS, HIGH);
+
+  delay(50); // 稍微緩衝
+
+  // 3. 初始化 LoRa
+  LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
+  digitalWrite(LORA_CS, LOW);
+  if (!LoRa.begin(434.5E6)) { 
+    Serial.println("❌ LoRa 初始化失敗，請檢查接線！");
+    while (1); 
+  }
+
+  LoRa.setSyncWord(0x6B); 
+  Serial.println("✅ LoRa 初始化成功，監聽中...");
+  digitalWrite(LORA_CS, HIGH);
+}
+
+void loop() {
+  // 切換至 LoRa 晶片準備接收
+  digitalWrite(LORA_CS, LOW);
+  int packetSize = LoRa.parsePacket();
+
+  if (packetSize) {
+    // 讀取封包內容
+    String incoming = "";
+    while (LoRa.available()) {
+      incoming += (char)LoRa.read(); 
+    }
+    int rxRssi = LoRa.packetRssi(); // 讀取訊號強度
+    digitalWrite(LORA_CS, HIGH);    // 釋放 LoRa 片選
+
+    // --- 檢查我方火箭密碼標頭 ---
+    if (incoming.startsWith("#SUPER_BBOX#")) {
+      // 切掉標頭，留下純數據
+      String realData = incoming.substring(12); 
+
+      // 螢幕即時顯示
+      Serial.println("========================================");
+      Serial.print(">>> [收到火箭數據] 長度: "); Serial.print(packetSize);
+      Serial.print(" bytes | RSSI: "); Serial.print(rxRssi); Serial.println(" dBm");
+      Serial.print("📊 數據內容: "); Serial.println(realData);
+
+      // --- 寫入 SD 卡邏輯 (嚴格控制 CS 切換) ---
+      digitalWrite(SD_CS, LOW);
+      dataFile = SD.open(filename, FILE_APPEND);
+      if (dataFile) {
+        dataFile.print(realData); // 寫入火箭發送的資料 (C:1,GPS:...等等)
+        dataFile.print(",");
+        dataFile.println(rxRssi); // 順便存入地面接收端的訊號強度，方便後續分析天線效能
+        dataFile.close();
+        Serial.println("💾 SD 卡寫入成功");
+      } else {
+        Serial.println("💾 SD 卡寫入失敗 (FILE_APPEND 失敗)");
+      }
+      digitalWrite(SD_CS, HIGH); // 釋放 SD 卡片選
+    }
+  } else {
+    digitalWrite(LORA_CS, HIGH); // 沒收到封包也釋放，保持總線乾淨
+  }
+}
