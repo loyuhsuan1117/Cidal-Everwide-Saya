@@ -1,0 +1,165 @@
+#include <RadioLib.h>
+#include <SPI.h>
+#include <SD.h>
+
+// 🎯 地面接收站射頻腳位配置 (SPI1)
+#define LORA_NSS  13
+#define LORA_MOSI 15
+#define LORA_MISO 12
+#define LORA_SCK  14
+#define LORA_RST  10
+#define LORA_BSY  2
+#define LORA_D1   3
+#define LORA_RXE  7
+#define LORA_TXE  6
+
+// 💾 SD 卡腳位配置 (SPI0)
+#define SD_CS   17
+#define SD_MOSI 19
+#define SD_MISO 16
+#define SD_SCK  18
+
+SPIClassRP2040 LORA_SPI(spi1, LORA_MISO, LORA_NSS, LORA_SCK, LORA_MOSI);
+LLCC68 radio = new Module(LORA_NSS, LORA_D1, LORA_RST, LORA_BSY, LORA_SPI);
+
+bool sdOK = false; // SD 卡狀態標記
+
+void setup() {
+  pinMode(LORA_TXE, OUTPUT);
+  pinMode(LORA_RXE, OUTPUT);
+  digitalWrite(LORA_TXE, LOW);
+  digitalWrite(LORA_RXE, LOW);
+
+  Serial.begin(115200);
+  delay(2000); 
+
+  Serial.println(F("\n============================================="));
+  Serial.println(F("📡 [地面接收站] 冗餘系統高階解調 & SD紀錄台啟動"));
+  Serial.println(F("============================================="));
+
+  // --- 1. 初始化 SD 卡 (SPI0) ---
+  SPI.setRX(SD_MISO);
+  SPI.setTX(SD_MOSI);
+  SPI.setSCK(SD_SCK);
+
+  if (SD.begin(SD_CS, SPI)) {
+    sdOK = true;
+    Serial.println(F("✅ SD 卡初始化成功！"));
+    
+    // 如果檔案不存在，先寫入 CSV 標頭
+    if (!SD.exists("telemetry.csv")) {
+      File dataFile = SD.open("telemetry.csv", FILE_WRITE);
+      if (dataFile) {
+        dataFile.println("RawData,RSSI,SNR");
+        dataFile.close();
+      }
+    }
+  } else {
+    Serial.println(F("⚠️ SD 卡初始化失敗！系統將僅進行無線電監聽，不進行儲存。"));
+  }
+
+  // --- 2. 初始化 LoRa (SPI1) ---
+  LORA_SPI.begin();
+  
+  int state = radio.begin(915.0, 125.0, 9, 7);
+  if (state == RADIOLIB_ERR_NONE) {
+    radio.setSyncWord(0x34); 
+    Serial.println(F("✅ 射頻模組初始化成功，進入持續監聽模式..."));
+  } else {
+    Serial.print(F("❌ 初始化失敗，錯誤代碼："));
+    Serial.println(state);
+    while (true);
+  }
+
+  // 長駐接收模式
+  digitalWrite(LORA_TXE, LOW);
+  digitalWrite(LORA_RXE, HIGH);
+}
+
+void loop() {
+  String receivedStr;
+  
+  int state = radio.receive(receivedStr);
+
+  if (state == RADIOLIB_ERR_NONE) {
+    
+    // 軟體驗證標頭
+    if (receivedStr.startsWith("#REDUN_BBOX#")) {
+      
+      String realData = receivedStr.substring(12);
+      float rssi = radio.getRSSI();
+      float snr = radio.getSNR();
+
+      // 1. 印出原始乾淨數據與訊號品質
+      Serial.println(F("---------------------------------------------"));
+      Serial.print(F("[📡 收到冗餘封包]: ")); 
+      Serial.println(realData);
+      
+      Serial.print(F("📊 RSSI: ")); Serial.print(rssi); Serial.print(F(" dBm | "));
+      Serial.print(F("🔊 SNR: ")); Serial.print(snr); Serial.println(F(" dB"));
+
+      // 2. 寫入 SD 卡 (以 CSV 格式追加：數據, RSSI, SNR)
+      if (sdOK) {
+        File logFile = SD.open("telemetry.csv", FILE_WRITE);
+        if (logFile) {
+          logFile.print(realData);
+          logFile.print(",");
+          logFile.print(rssi);
+          logFile.print(",");
+          logFile.println(snr);
+          logFile.close(); // 每次寫入完成立刻 close，確保數據落盤不丟失
+          Serial.println(F("💾 [SD 卡] 數據已寫入 telemetry.csv"));
+        } else {
+          Serial.println(F("❌ [SD 卡] 寫入失敗 (無法開啟檔案)"));
+        }
+      }
+
+      // 3. 欄位拆解顯示
+      int commaIndex[12];
+      int count = 0;
+      for (int i = 0; i < realData.length(); i++) {
+        if (realData.charAt(i) == ',') {
+          if (count < 12) {
+            commaIndex[count] = i;
+            count++;
+          }
+        }
+      }
+
+      if (count == 12) {
+        Serial.println(F("✨ [詳細欄位拆解]:"));
+        String ms      = realData.substring(0, commaIndex[0]);
+        String ax      = realData.substring(commaIndex[0]+1, commaIndex[1]);
+        String ay      = realData.substring(commaIndex[1]+1, commaIndex[2]);
+        String az      = realData.substring(commaIndex[2]+1, commaIndex[3]);
+        String mx      = realData.substring(commaIndex[3]+1, commaIndex[4]);
+        String my      = realData.substring(commaIndex[4]+1, commaIndex[5]);
+        String mz      = realData.substring(commaIndex[5]+1, commaIndex[6]);
+        String press   = realData.substring(commaIndex[6]+1, commaIndex[7]);
+        String alt     = realData.substring(commaIndex[7]+1, commaIndex[8]);
+        String sats    = realData.substring(commaIndex[8]+1, commaIndex[9]);
+        String lat     = realData.substring(commaIndex[9]+1, commaIndex[10]);
+        String lng     = realData.substring(commaIndex[10]+1, commaIndex[11]);
+        String gps_alt = realData.substring(commaIndex[11]+1);
+
+        Serial.print(F("  ⏱️ 時間: ")); Serial.print(ms); Serial.println(F(" ms"));
+        Serial.print(F("  📐 加速: X=")); Serial.print(ax); Serial.print(F(", Y=")); Serial.print(ay); Serial.print(F(", Z=")); Serial.println(az);
+        Serial.print(F("  🧲 地磁: X=")); Serial.print(mx); Serial.print(F(", Y=")); Serial.print(my); Serial.print(F(", Z=")); Serial.println(mz);
+        Serial.print(F("  🎈 氣壓: ")); Serial.print(press); Serial.print(F(" hPa | 高度: ")); Serial.print(alt); Serial.println(F(" m"));
+        Serial.print(F("  🛰️ GPS : 衛星數=")); Serial.print(sats); Serial.print(F(" | 座標: ")); Serial.print(lat); Serial.print(F(", ")); Serial.println(lng);
+        Serial.print(F("  🏔️ GPS高度: ")); Serial.print(gps_alt); Serial.println(F(" m"));
+      } else {
+        Serial.print(F("⚠️ [提示] 封包資料長度不滿足標準拆解格式（預期12個逗號，實際計算到 "));
+        Serial.print(count);
+        Serial.println(F(" 個），僅顯示上方原始封包。"));
+      }
+      Serial.println(F("---------------------------------------------"));
+    }
+    
+  } else if (state == RADIOLIB_ERR_RX_TIMEOUT) {
+    // 默默等待
+  } else {
+    Serial.print(F("⚠️ 接收異常，錯誤代碼: "));
+    Serial.println(state);
+  }
+}
