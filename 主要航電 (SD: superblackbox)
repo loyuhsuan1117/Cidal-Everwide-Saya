@@ -2,7 +2,7 @@
 #include <SPI.h>
 #include <SD.h>
 #include <Adafruit_Sensor.h>
-#include <Adafruit_BMP280.h> // 1. 已修改為 BMP280 函式庫
+#include <Adafruit_BMP280.h> 
 #include <Adafruit_LSM9DS1.h>
 #include <TinyGPS++.h>
 #include "SparkFunLSM6DS3.h"
@@ -15,17 +15,17 @@
 #define SD_MISO    12
 #define SD_MOSI    13
 
-// 2. 根據圖片修改 LoRa 天線引腳
+// LoRa 天線引腳修改（RST -> 0, DIO0 -> 35）
 #define LORA_CS      2
-#define LORA_RST     1  // 已由 0 改為 1
-#define LORA_DIO0    21 // 已由 35 改為 21
+#define LORA_RST     0  // 已改為 0
+#define LORA_DIO0   35  // 已改為 35
 #define RXD2 4
 #define TXD2 5
 
 #define WDT_TIMEOUT 2 // 看門狗超時時間 (2秒)
 
-Adafruit_BMP280 bmp; // 3. 已修改為 BMP280 物件
-LSM6DS3 lsm6(I2C_MODE, 0x6A);      
+Adafruit_BMP280 bmp; 
+LSM6DS3 lsm6(I2C_MODE, 0x6A);     
 Adafruit_LSM9DS1 lsm9 = Adafruit_LSM9DS1(); 
 TinyGPSPlus gps;
 HardwareSerial neogps(2);
@@ -44,7 +44,7 @@ void setup() {
   Serial.begin(115200);
   delay(2000); 
 
-  Serial.println("\n--- 系統啟動：火箭終極硬體防死鎖安全版 (BMP280四腳位+新天線版) ---");
+  Serial.println("\n--- 系統啟動：火箭終極硬體防死鎖安全版 (BMP280四腳位+修正LoRa引腳版) ---");
 
   // 初始化看門狗 (Core 3.x 結構體配置)
   esp_task_wdt_config_t wdt_config = {
@@ -61,7 +61,7 @@ void setup() {
 
   neogps.begin(38400, SERIAL_8N1, RXD2, TXD2);
 
-  // 4. BMP280 唯一次初始化（支援四腳位自動雙位址探測）
+  // BMP280 唯一次初始化（支援四腳位自動雙位址探測）
   if (bmp.begin(0x77)) { 
     bmpAlive = true; 
     Serial.println("✅ BMP280 成功 (位址: 0x77)");
@@ -143,7 +143,7 @@ void logAndDisplayAllData() {
   double lat = 0, lng = 0, alt = 0;
   int sats = 0;
 
-  // 5. 讀取 BMP280 並換算海平面高度
+  // 讀取 BMP280 並換算海平面高度
   if (bmpAlive) {
     temp = bmp.readTemperature();
     press = bmp.readPressure() / 100.0; // Pa 轉 hPa
@@ -152,7 +152,7 @@ void logAndDisplayAllData() {
       press = 0;
       bmp_alt = 0;
     } else {
-      // 使用與原本相同的高高換算公式 (1013.25 為標準海平面氣壓)
+      // 換算公式 (1013.25 為標準海平面氣壓)
       bmp_alt = 44330.0 * (1.0 - pow(press / 1013.25, 0.1903));
     }
   }
@@ -193,7 +193,7 @@ void logAndDisplayAllData() {
   loraMsg += ",Gyr:" + String(gx, 1) + "/" + String(gy, 1) + "/" + String(gz, 1);          
   loraMsg += ",Mag:" + String(mx, 0) + "/" + String(my, 0) + "/" + String(mz, 0);          
 
-  // --- Serial Monitor 一目瞭然排版 ---
+  // --- Serial Monitor 排版 ---
   Serial.println("========================================");
   Serial.print("第 "); Serial.print(logCount); Serial.println(" 次數據紀錄：");
   Serial.print("📍 GPS: "); Serial.print(lat, 6); Serial.print(", "); Serial.print(lng, 6); Serial.print(" | Sat: "); Serial.print(sats);
