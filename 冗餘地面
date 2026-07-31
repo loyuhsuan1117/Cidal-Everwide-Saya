@@ -1,6 +1,8 @@
 #include <RadioLib.h>
+#include <SPI.h>
+#include <SD.h>
 
-// 🎯 地面接收站腳位配置（與你的發射端完全相同，做板子時可直接防呆複製）
+// 🎯 地面接收站射頻腳位配置 (SPI1)
 #define LORA_NSS  13
 #define LORA_MOSI 15
 #define LORA_MISO 12
@@ -11,8 +13,16 @@
 #define LORA_RXE  7
 #define LORA_TXE  6
 
+// 💾 SD 卡腳位配置 (SPI0)
+#define SD_CS   17
+#define SD_MOSI 19
+#define SD_MISO 16
+#define SD_SCK  18
+
 SPIClassRP2040 LORA_SPI(spi1, LORA_MISO, LORA_NSS, LORA_SCK, LORA_MOSI);
 LLCC68 radio = new Module(LORA_NSS, LORA_D1, LORA_RST, LORA_BSY, LORA_SPI);
+
+bool sdOK = false; // SD 卡狀態標記
 
 void setup() {
   pinMode(LORA_TXE, OUTPUT);
@@ -21,30 +31,47 @@ void setup() {
   digitalWrite(LORA_RXE, LOW);
 
   Serial.begin(115200);
-  
-  // 延遲兩秒，確保你打開 Serial Monitor 時能完整看到開機畫面
   delay(2000); 
 
   Serial.println(F("\n============================================="));
-  Serial.println(F("📡 [地面接收站] 冗餘系統高階解調監聽台啟動"));
+  Serial.println(F("📡 [地面接收站] 冗餘系統高階解調 & SD紀錄台啟動"));
   Serial.println(F("============================================="));
 
+  // --- 1. 初始化 SD 卡 (SPI0) ---
+  SPI.setRX(SD_MISO);
+  SPI.setTX(SD_MOSI);
+  SPI.setSCK(SD_SCK);
+
+  if (SD.begin(SD_CS, SPI)) {
+    sdOK = true;
+    Serial.println(F("✅ SD 卡初始化成功！"));
+    
+    // 如果檔案不存在，先寫入 CSV 標頭
+    if (!SD.exists("telemetry.csv")) {
+      File dataFile = SD.open("telemetry.csv", FILE_WRITE);
+      if (dataFile) {
+        dataFile.println("RawData,RSSI,SNR");
+        dataFile.close();
+      }
+    }
+  } else {
+    Serial.println(F("⚠️ SD 卡初始化失敗！系統將僅進行無線電監聽，不進行儲存。"));
+  }
+
+  // --- 2. 初始化 LoRa (SPI1) ---
   LORA_SPI.begin();
   
-  // 必須與發射端參數完全一致：915.0MHz, 125kHz, SF9
   int state = radio.begin(915.0, 125.0, 9, 7);
   if (state == RADIOLIB_ERR_NONE) {
-    // 【修改點】地面端也同步加上硬體同步字 0x34 進行第一道過濾
     radio.setSyncWord(0x34); 
     Serial.println(F("✅ 射頻模組初始化成功，進入持續監聽模式..."));
   } else {
-    // 錯誤 104 代表同步字設定失敗（LLCC68支援特定的LoRa同步碼，0x34為RadioLib合法值）
     Serial.print(F("❌ 初始化失敗，錯誤代碼："));
     Serial.println(state);
     while (true);
   }
 
-  // 射頻開關控制：地面站長駐接收模式（RXE拉高，TXE拉低）
+  // 長駐接收模式
   digitalWrite(LORA_TXE, LOW);
   digitalWrite(LORA_RXE, HIGH);
 }
@@ -52,27 +79,42 @@ void setup() {
 void loop() {
   String receivedStr;
   
-  // 檢查是否有無線電封包進來
   int state = radio.receive(receivedStr);
 
   if (state == RADIOLIB_ERR_NONE) {
     
-    // --- 【修改點】軟體層強行檢查密碼標頭，不包含 #REDUN_BBOX# 則直接丟棄 ---
+    // 軟體驗證標頭
     if (receivedStr.startsWith("#REDUN_BBOX#")) {
       
-      // 把密碼標頭切掉（長度12），只留下後面的冗餘系統數據
       String realData = receivedStr.substring(12);
+      float rssi = radio.getRSSI();
+      float snr = radio.getSNR();
 
-      // 1. 無條件立刻噴出原始字串（已去掉密碼，乾淨數據）
+      // 1. 印出原始乾淨數據與訊號品質
       Serial.println(F("---------------------------------------------"));
       Serial.print(F("[📡 收到冗餘封包]: ")); 
       Serial.println(realData);
       
-      // 2. 打印當前的射頻物理訊號品質
-      Serial.print(F("📊 RSSI: ")); Serial.print(radio.getRSSI()); Serial.print(F(" dBm | "));
-      Serial.print(F("🔊 SNR: ")); Serial.print(radio.getSNR()); Serial.println(F(" dB"));
+      Serial.print(F("📊 RSSI: ")); Serial.print(rssi); Serial.print(F(" dBm | "));
+      Serial.print(F("🔊 SNR: ")); Serial.print(snr); Serial.println(F(" dB"));
 
-      // 3. 尋找字串中的所有逗號進行欄位切分
+      // 2. 寫入 SD 卡 (以 CSV 格式追加：數據, RSSI, SNR)
+      if (sdOK) {
+        File logFile = SD.open("telemetry.csv", FILE_WRITE);
+        if (logFile) {
+          logFile.print(realData);
+          logFile.print(",");
+          logFile.print(rssi);
+          logFile.print(",");
+          logFile.println(snr);
+          logFile.close(); // 每次寫入完成立刻 close，確保數據落盤不丟失
+          Serial.println(F("💾 [SD 卡] 數據已寫入 telemetry.csv"));
+        } else {
+          Serial.println(F("❌ [SD 卡] 寫入失敗 (無法開啟檔案)"));
+        }
+      }
+
+      // 3. 欄位拆解顯示
       int commaIndex[12];
       int count = 0;
       for (int i = 0; i < realData.length(); i++) {
@@ -84,7 +126,6 @@ void loop() {
         }
       }
 
-      // 4. 如果剛好算到 12 個逗號（代表 13 個欄位完整無缺），就進行漂亮拆解
       if (count == 12) {
         Serial.println(F("✨ [詳細欄位拆解]:"));
         String ms      = realData.substring(0, commaIndex[0]);
@@ -113,14 +154,11 @@ void loop() {
         Serial.println(F(" 個），僅顯示上方原始封包。"));
       }
       Serial.println(F("---------------------------------------------"));
-    } else {
-      // 捕獲到非我方標頭的干擾訊號，直接丟棄不予處理
     }
     
   } else if (state == RADIOLIB_ERR_RX_TIMEOUT) {
-    // 沒有接收到數據，默默繼續等待
+    // 默默等待
   } else {
-    // 如果發生其它像是解調錯誤等異常，也直接印出代碼
     Serial.print(F("⚠️ 接收異常，錯誤代碼: "));
     Serial.println(state);
   }
